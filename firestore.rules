@@ -1,0 +1,393 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUsername(name) {
+      return name is string &&
+             name.matches('^[a-z0-9_]{3,20}$') &&
+             !(name in ['admin', 'administrator', 'support', 'mio', 'official', 'system', 'moderator', 'mod', 'staff', 'security', 'help', 'root']);
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function otherParticipant(uids) {
+      return uids[0] == request.auth.uid ? uids[1] : uids[0];
+    }
+
+    function isChatIdParticipant(chatId, uid) {
+      return chatId.matches('^' + uid + '_.+') || chatId.matches('.+_' + uid + '$');
+    }
+
+    function isNotBlockedPair(uidA, uidB) {
+      return !exists(/databases/$(database)/documents/users/$(uidA)/blocks/$(uidB)) &&
+             !exists(/databases/$(database)/documents/users/$(uidB)/blocks/$(uidA));
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUsernameRecord(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             isValidUsername(data.username) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 40 &&
+             data.publicKey is string && data.publicKey.size() >= 20 && data.publicKey.size() <= 512 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUserProfile(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             isValidUsername(data.username) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 40 &&
+             data.publicKey is string && data.publicKey.size() >= 20 && data.publicKey.size() <= 512 &&
+             data.ageConfirmed is bool && data.ageConfirmed == true &&
+             isValidTimestamp(data.ageConfirmedAt) &&
+             (!('mipPartnerUid' in data) || (data.mipPartnerUid is string && data.mipPartnerUid.size() <= 128)) &&
+             (!('mipChatId' in data) || (data.mipChatId is string && data.mipChatId.size() <= 128)) &&
+             (!('mipCooldownUntil' in data) || data.mipCooldownUntil is timestamp) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBlockRecord(data) {
+      return data.blockedUid is string && data.blockedUid.size() >= 1 && data.blockedUid.size() <= 128 &&
+             isValidUsername(data.blockedUsername) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidChat(data) {
+      return data.participantUids is list && data.participantUids.size() == 2 &&
+             data.participantUids[0] is string && data.participantUids[1] is string &&
+             data.participantUids[0] != data.participantUids[1] &&
+             data.initiatorUid is string && data.initiatorUid in data.participantUids &&
+             data.status in ['pending', 'accepted', 'declined'] &&
+             data.participantUsernames is map && data.participantUsernames.size() == 2 &&
+             data.participantDisplayNames is map && data.participantDisplayNames.size() == 2 &&
+             data.participantPublicKeys is map && data.participantPublicKeys.size() == 2 &&
+             data.blockedBy is list && data.blockedBy.size() <= 2 &&
+             (data.blockedBy.size() == 0 || data.blockedBy[0] in data.participantUids) &&
+             data.typingBy is map && data.typingBy.size() <= 2 &&
+             data.unreadCounts is map && data.unreadCounts.size() <= 2 &&
+             (!('lastMessageCiphertext' in data) || (data.lastMessageCiphertext is string && data.lastMessageCiphertext.size() <= 8192)) &&
+             (!('lastMessageNonce' in data) || (data.lastMessageNonce is string && data.lastMessageNonce.size() <= 128)) &&
+             (!('lastMessageSenderUid' in data) || (data.lastMessageSenderUid is string && data.lastMessageSenderUid.size() <= 128)) &&
+             (!('lastMessageType' in data) || data.lastMessageType in ['text', 'mood', '']) &&
+             (!('lastMessageStatus' in data) || data.lastMessageStatus in ['sent', 'delivered', 'read', '']) &&
+             (!('lastMessageAt' in data) || isValidTimestamp(data.lastMessageAt)) &&
+             (!('mipStatus' in data) || data.mipStatus in ['none', 'pending', 'accepted', 'declined', 'unlinked']) &&
+             (!('mipSenderUid' in data) || (data.mipSenderUid is string && data.mipSenderUid.size() <= 128)) &&
+             (!('mipCiphertext' in data) || (data.mipCiphertext is string && data.mipCiphertext.size() <= 4096)) &&
+             (!('mipNonce' in data) || (data.mipNonce is string && data.mipNonce.size() <= 128)) &&
+             (!('mipUpdatedAt' in data) || isValidTimestamp(data.mipUpdatedAt)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMessage(data) {
+      return data.chatId is string && isValidId(data.chatId) &&
+             data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.recipientUid is string && data.recipientUid.size() >= 1 && data.recipientUid.size() <= 128 &&
+             data.senderUid != data.recipientUid &&
+             data.participantUids is list && data.participantUids.size() == 2 &&
+             data.senderUid in data.participantUids &&
+             data.recipientUid in data.participantUids &&
+             data.type in ['text', 'mood'] &&
+             data.ciphertext is string && data.ciphertext.size() <= 8192 &&
+             data.nonce is string && data.nonce.size() <= 128 &&
+             (!('moodId' in data) || data.moodId in ['angry', 'bored', 'tired', 'sad', 'happy']) &&
+             data.status in ['sent', 'delivered', 'read'] &&
+             data.deletedFor is list && data.deletedFor.size() <= 2 &&
+             (data.deletedFor.size() == 0 || data.deletedFor[0] in data.participantUids) &&
+             data.deletedForEveryone is bool &&
+             data.reactions is map && data.reactions.size() <= 2 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt) &&
+             data.expiresAt is timestamp && data.expiresAt > data.createdAt;
+    }
+
+    function isValidReport(data) {
+      return data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128 &&
+             data.reportedUid is string && data.reportedUid.size() >= 1 && data.reportedUid.size() <= 128 &&
+             data.reporterUid != data.reportedUid &&
+             data.chatId is string && isValidId(data.chatId) &&
+             data.reason in ['harassment', 'spam', 'non_consensual', 'impersonation', 'other'] &&
+             (!('excerpt' in data) || (data.excerpt is string && data.excerpt.size() <= 500)) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    // --- 1. Exact Username Lookup (NO list/browsing; create-only by owner, delete on account removal) ---
+    match /usernames/{username} {
+      allow get: if isSignedIn() && isValidUsername(username);
+      allow list: if false;
+      allow create: if isSignedIn() &&
+                       isValidUsername(username) &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().username == username &&
+                       incoming().keys().hasAll(['uid', 'username', 'displayName', 'publicKey', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'username', 'displayName', 'publicKey', 'createdAt', 'updatedAt']) &&
+                       isValidUsernameRecord(incoming());
+      allow update: if false;
+      allow delete: if isSignedIn() && existing().uid == request.auth.uid;
+    }
+
+    // --- 2. Private User Profile ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().uid == request.auth.uid &&
+                       incoming().keys().hasAll(['uid', 'username', 'displayName', 'publicKey', 'ageConfirmed', 'ageConfirmedAt', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'username', 'displayName', 'publicKey', 'ageConfirmed', 'ageConfirmedAt', 'mipPartnerUid', 'mipChatId', 'mipCooldownUntil', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().uid == existing().uid &&
+                       incoming().username == existing().username &&
+                       incoming().ageConfirmed == existing().ageConfirmed &&
+                       incoming().ageConfirmedAt == existing().ageConfirmedAt &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidUserProfile(incoming()) &&
+                       (!('mipCooldownUntil' in existing()) || existing().mipCooldownUntil <= request.time || !('mipPartnerUid' in incoming()) || incoming().mipPartnerUid == '') &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'publicKey', 'mipPartnerUid', 'mipChatId', 'mipCooldownUntil', 'updatedAt']);
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+
+      // --- 3. User Blocklist ---
+      match /blocks/{blockedUid} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(blockedUid) && request.auth.uid == userId;
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(blockedUid) &&
+                         request.auth.uid == userId &&
+                         blockedUid != userId &&
+                         incoming().blockedUid == blockedUid &&
+                         incoming().keys().hasAll(['blockedUid', 'blockedUsername', 'createdAt']) &&
+                         incoming().keys().hasOnly(['blockedUid', 'blockedUsername', 'createdAt']) &&
+                         isValidBlockRecord(incoming());
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(blockedUid) && request.auth.uid == userId;
+      }
+    }
+
+    function canUpdateChat() {
+      let prev = resource.data;
+      let next = request.resource.data;
+      let changed = next.diff(prev).affectedKeys();
+      let uid = request.auth.uid;
+      let other = prev.participantUids[0] == uid ? prev.participantUids[1] : prev.participantUids[0];
+      return (uid in prev.participantUids) &&
+             isValidChat(next) &&
+             next.participantUids == prev.participantUids &&
+             next.participantUsernames == prev.participantUsernames &&
+             next.initiatorUid == prev.initiatorUid &&
+             next.createdAt == prev.createdAt && (
+               // Action 3: Block or Unblock (participant may only toggle their own UID in blockedBy)
+               (
+                 changed.hasOnly(['blockedBy', 'updatedAt']) &&
+                 (
+                   ((uid in next.blockedBy) && !(uid in prev.blockedBy) && next.blockedBy.size() == prev.blockedBy.size() + 1) ||
+                   (!(uid in next.blockedBy) && (uid in prev.blockedBy) && next.blockedBy.size() + 1 == prev.blockedBy.size())
+                 )
+               ) ||
+               // Action 1: Recipient accepts or declines pending chat request
+               (
+                 prev.status == 'pending' &&
+                 uid != prev.initiatorUid &&
+                 next.status in ['accepted', 'declined'] &&
+                 prev.blockedBy.size() == 0 &&
+                 changed.hasOnly(['status', 'updatedAt']) &&
+                 isNotBlockedPair(prev.participantUids[0], prev.participantUids[1])
+               ) ||
+               // Action 2: Messaging metadata, typing indicator, and unread receipts
+               (
+                 prev.status == 'accepted' &&
+                 prev.blockedBy.size() == 0 &&
+                 changed.hasOnly([
+                   'typingBy', 'unreadCounts',
+                   'lastMessageCiphertext', 'lastMessageNonce',
+                   'lastMessageSenderUid', 'lastMessageType',
+                   'lastMessageStatus', 'lastMessageAt', 'updatedAt'
+                 ]) &&
+                 isNotBlockedPair(prev.participantUids[0], prev.participantUids[1])
+               ) ||
+               // Action 4: MIP sealed letter lifecycle (with 24h unlink cooldown)
+               (
+                 prev.status == 'accepted' &&
+                 prev.blockedBy.size() == 0 &&
+                 changed.hasOnly([
+                   'mipStatus', 'mipSenderUid', 'mipCiphertext',
+                   'mipNonce', 'mipUpdatedAt', 'updatedAt'
+                 ]) &&
+                 (
+                   (
+                     next.mipStatus == 'pending' &&
+                     next.mipSenderUid == uid &&
+                     (!('mipStatus' in prev) || prev.mipStatus in ['none', 'declined', 'unlinked']) &&
+                     (!('mipStatus' in prev) || prev.mipStatus != 'unlinked' || !('mipUpdatedAt' in prev) || request.time >= prev.mipUpdatedAt + duration.value(24, 'h'))
+                   ) ||
+                   (next.mipStatus in ['accepted', 'declined'] && prev.mipStatus == 'pending' && uid != prev.mipSenderUid) ||
+                   (next.mipStatus == 'unlinked' && prev.mipStatus == 'accepted')
+                 ) &&
+                 isNotBlockedPair(prev.participantUids[0], prev.participantUids[1])
+               ) ||
+               // Action 5: Sync own display name / public key without modifying partner's entries
+               (
+                 changed.hasOnly(['participantDisplayNames', 'participantPublicKeys', 'updatedAt']) &&
+                 next.participantDisplayNames[other] == prev.participantDisplayNames[other] &&
+                 next.participantPublicKeys[other] == prev.participantPublicKeys[other] &&
+                 next.participantDisplayNames[uid] is string &&
+                 next.participantDisplayNames[uid].size() >= 1 &&
+                 next.participantDisplayNames[uid].size() <= 40 &&
+                 next.participantPublicKeys[uid] is string &&
+                 next.participantPublicKeys[uid].size() >= 20 &&
+                 next.participantPublicKeys[uid].size() <= 512
+               )
+             );
+    }
+
+    // --- 4. 1:1 Chats & MIP Sealed Letter ---
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && (
+        (resource == null && isChatIdParticipant(chatId, request.auth.uid)) ||
+        (resource != null && (request.auth.uid in existing().participantUids))
+      );
+      allow list: if isSignedIn() && (request.auth.uid in existing().participantUids);
+
+      allow create: if isSignedIn() &&
+                       isValidId(chatId) &&
+                       isValidChat(incoming()) &&
+                       request.auth.uid in incoming().participantUids &&
+                       incoming().initiatorUid == request.auth.uid &&
+                       incoming().status == 'pending' &&
+                       incoming().blockedBy.size() == 0 &&
+                       incoming().keys().hasAll(['participantUids', 'initiatorUid', 'status', 'participantUsernames', 'participantDisplayNames', 'participantPublicKeys', 'blockedBy', 'typingBy', 'unreadCounts', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['participantUids', 'initiatorUid', 'status', 'participantUsernames', 'participantDisplayNames', 'participantPublicKeys', 'blockedBy', 'typingBy', 'unreadCounts', 'lastMessageCiphertext', 'lastMessageNonce', 'lastMessageSenderUid', 'lastMessageType', 'lastMessageStatus', 'lastMessageAt', 'mipStatus', 'mipSenderUid', 'mipCiphertext', 'mipNonce', 'mipUpdatedAt', 'createdAt', 'updatedAt']) &&
+                       isNotBlockedPair(request.auth.uid, otherParticipant(incoming().participantUids));
+
+      allow update: if isSignedIn() && isValidId(chatId) && canUpdateChat();
+
+      allow delete: if isSignedIn() && isValidId(chatId) && (request.auth.uid in existing().participantUids);
+
+      // --- 5. Encrypted Chat Messages Relay ---
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && (
+          (resource == null && isChatIdParticipant(chatId, request.auth.uid)) ||
+          (resource != null && (request.auth.uid in existing().participantUids))
+        );
+        allow list: if isSignedIn() && (request.auth.uid in existing().participantUids);
+
+        allow create: if isSignedIn() &&
+                         isValidId(chatId) &&
+                         isValidId(messageId) &&
+                         isValidMessage(incoming()) &&
+                         incoming().chatId == chatId &&
+                         incoming().senderUid == request.auth.uid &&
+                         request.auth.uid in incoming().participantUids &&
+                         incoming().status == 'sent' &&
+                         incoming().deletedForEveryone == false &&
+                         incoming().deletedFor.size() == 0 &&
+                         incoming().reactions.size() == 0 &&
+                         incoming().keys().hasAll(['chatId', 'senderUid', 'recipientUid', 'participantUids', 'type', 'ciphertext', 'nonce', 'status', 'deletedFor', 'deletedForEveryone', 'reactions', 'createdAt', 'updatedAt', 'expiresAt']) &&
+                         incoming().keys().hasOnly(['chatId', 'senderUid', 'recipientUid', 'participantUids', 'type', 'ciphertext', 'nonce', 'moodId', 'status', 'deletedFor', 'deletedForEveryone', 'reactions', 'createdAt', 'updatedAt', 'expiresAt']) &&
+                         isNotBlockedPair(incoming().senderUid, incoming().recipientUid) &&
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.status == 'accepted' &&
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.blockedBy.size() == 0 &&
+                         get(/databases/$(database)/documents/chats/$(chatId)).data.participantUids.hasAll(incoming().participantUids);
+
+        // No message text/content edits allowed after write; only receipts, reactions, and delete flags.
+        allow update: if isSignedIn() &&
+                         isValidId(chatId) &&
+                         isValidId(messageId) &&
+                         (request.auth.uid in existing().participantUids) &&
+                         isValidMessage(incoming()) &&
+                         incoming().chatId == existing().chatId &&
+                         incoming().senderUid == existing().senderUid &&
+                         incoming().recipientUid == existing().recipientUid &&
+                         incoming().participantUids == existing().participantUids &&
+                         incoming().type == existing().type &&
+                         ((!('moodId' in incoming()) && !('moodId' in existing())) || ('moodId' in incoming() && 'moodId' in existing() && incoming().moodId == existing().moodId)) &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().expiresAt == existing().expiresAt && (
+                           // Branch 1: Recipient updates delivery / read status
+                           (
+                             request.auth.uid == existing().recipientUid &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+                             incoming().status in ['delivered', 'read']
+                           ) ||
+                           // Branch 2: Participant toggles only their own emoji reaction (only when not deleted or blocked)
+                           (
+                             existing().deletedForEveryone == false &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'updatedAt']) &&
+                             incoming().reactions.size() <= 2 &&
+                             incoming().reactions.keys().hasOnly(existing().participantUids) &&
+                             (!(otherParticipant(existing().participantUids) in existing().reactions) ||
+                               ((otherParticipant(existing().participantUids) in incoming().reactions) &&
+                                incoming().reactions[otherParticipant(existing().participantUids)] == existing().reactions[otherParticipant(existing().participantUids)])) &&
+                             (!(request.auth.uid in incoming().reactions) ||
+                               (incoming().reactions[request.auth.uid] is string && incoming().reactions[request.auth.uid].size() <= 16)) &&
+                             isNotBlockedPair(existing().senderUid, existing().recipientUid)
+                           ) ||
+                           // Branch 3: Participant deletes message for themselves
+                           (
+                             incoming().diff(existing()).affectedKeys().hasOnly(['deletedFor', 'updatedAt']) &&
+                             (request.auth.uid in incoming().deletedFor) &&
+                             incoming().deletedFor.size() <= 2
+                           ) ||
+                           // Branch 4: Sender deletes message for everyone (one-way transition)
+                           (
+                             request.auth.uid == existing().senderUid &&
+                             existing().deletedForEveryone == false &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['deletedForEveryone', 'ciphertext', 'nonce', 'updatedAt']) &&
+                             incoming().deletedForEveryone == true &&
+                             incoming().ciphertext == '' &&
+                             incoming().nonce == ''
+                           )
+                         );
+
+        // Only the recipient or original sender can delete relay documents
+        allow delete: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
+                         (request.auth.uid == existing().recipientUid || request.auth.uid == existing().senderUid);
+      }
+    }
+
+    // --- 6. Abuse Reports ---
+    match /reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && existing().reporterUid == request.auth.uid;
+      allow list: if isSignedIn() && existing().reporterUid == request.auth.uid;
+      allow create: if isSignedIn() &&
+                       isValidId(reportId) &&
+                       incoming().reporterUid == request.auth.uid &&
+                       incoming().keys().hasAll(['reporterUid', 'reportedUid', 'chatId', 'reason', 'createdAt']) &&
+                       incoming().keys().hasOnly(['reporterUid', 'reportedUid', 'chatId', 'reason', 'excerpt', 'createdAt']) &&
+                       isValidReport(incoming()) &&
+                       exists(/databases/$(database)/documents/chats/$(incoming().chatId)) &&
+                       request.auth.uid in get(/databases/$(database)/documents/chats/$(incoming().chatId)).data.participantUids &&
+                       incoming().reportedUid in get(/databases/$(database)/documents/chats/$(incoming().chatId)).data.participantUids;
+      allow update, delete: if false;
+    }
+  }
+}

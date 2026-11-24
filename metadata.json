@@ -1,0 +1,6 @@
+{
+  "name": "Mio",
+  "description": "A romantic, private chat app for couples with custom palette, mood cats, swipe-to-reply, reactions, and MIP sealed letters.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

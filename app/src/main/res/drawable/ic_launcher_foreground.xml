@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer crimson wax seal ring within 66dp safe zone (center 54,54; radius 26) -->
+    <path
+        android:fillColor="#A42527"
+        android:pathData="M54,28 C68.36,28 80,39.64 80,54 C80,68.36 68.36,80 54,80 C39.64,80 28,68.36 28,54 C28,39.64 39.64,28 54,28 Z" />
+    <!-- Subtle inner highlight ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FE8492"
+        android:strokeWidth="1.8"
+        android:strokeAlpha="0.55"
+        android:pathData="M54,32 C66.15,32 76,41.85 76,54 C76,66.15 66.15,76 54,76 C41.85,76 32,66.15 32,54 C32,41.85 41.85,32 54,32 Z" />
+    <!-- Romantic blush-rose heart bubble silhouette -->
+    <path
+        android:fillColor="#FE8492"
+        android:pathData="M54,68.5 C53.4,68.5 52.8,68.3 52.3,67.9 C43.1,60.7 38,54.8 38,48.6 C38,43.5 41.9,39.8 46.8,39.8 C49.8,39.8 52.4,41.3 54,43.6 C55.6,41.3 58.2,39.8 61.2,39.8 C66.1,39.8 70,43.5 70,48.6 C70,54.8 64.9,60.7 55.7,67.9 C55.2,68.3 54.6,68.5 54,68.5 Z" />
+    <!-- Small warm off-white chat dot / sparkle inside heart -->
+    <path
+        android:fillColor="#F8E8EE"
+        android:pathData="M48.5,51.2 A2.1,2.1 0 1,1 48.5,47.0 A2.1,2.1 0 1,1 48.5,51.2 Z M59.5,51.2 A2.1,2.1 0 1,1 59.5,47.0 A2.1,2.1 0 1,1 59.5,51.2 Z" />
+</vector>

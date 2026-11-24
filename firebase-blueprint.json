@@ -1,0 +1,141 @@
+{
+  "entities": {
+    "UsernameClaim": {
+      "title": "UsernameClaim",
+      "description": "Public exact-lookup record mapping a unique lowercase username to a user's UID and ECDH public key. List queries are forbidden to prevent user enumeration.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID of the owner" },
+        "username": { "type": "string", "description": "Unique handle matching ^[a-z0-9_]{3,20}$" },
+        "displayName": { "type": "string", "description": "Display name (1-40 chars)" },
+        "publicKey": { "type": "string", "description": "Base64-encoded ECDH P-256 public key" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["uid", "username", "displayName", "publicKey", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private owner-only profile storing 18+ confirmation timestamp, public key, and MIP relationship state.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "username": { "type": "string", "description": "Immutable unique username" },
+        "displayName": { "type": "string", "description": "User's display name" },
+        "publicKey": { "type": "string", "description": "Base64-encoded ECDH P-256 public key" },
+        "ageConfirmed": { "type": "boolean", "description": "18+ confirmation flag (no birth date stored)" },
+        "ageConfirmedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of 18+ confirmation" },
+        "mipPartnerUid": { "type": "string", "description": "Optional UID of accepted MIP partner" },
+        "mipChatId": { "type": "string", "description": "Optional chatId of accepted MIP chat" },
+        "mipCooldownUntil": { "type": "string", "format": "date-time", "description": "Optional cooldown timestamp after MIP unlink" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["uid", "username", "displayName", "publicKey", "ageConfirmed", "ageConfirmedAt", "createdAt", "updatedAt"]
+    },
+    "BlockRecord": {
+      "title": "BlockRecord",
+      "description": "User-scoped blocklist entry preventing chat requests, messages, and MIP letters.",
+      "type": "object",
+      "properties": {
+        "blockedUid": { "type": "string", "description": "UID of the blocked user" },
+        "blockedUsername": { "type": "string", "description": "Username of the blocked user" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["blockedUid", "blockedUsername", "createdAt"]
+    },
+    "ChatThread": {
+      "title": "ChatThread",
+      "description": "1:1 conversation metadata, request status, typing indicator, encrypted last-message snippet, and MIP sealed letter state.",
+      "type": "object",
+      "properties": {
+        "participantUids": { "type": "array", "description": "Exactly two participant UIDs" },
+        "initiatorUid": { "type": "string", "description": "UID of user who sent the chat request" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "participantUsernames": { "type": "object", "description": "Map of UID to username" },
+        "participantDisplayNames": { "type": "object", "description": "Map of UID to display name" },
+        "participantPublicKeys": { "type": "object", "description": "Map of UID to Base64 public key" },
+        "blockedBy": { "type": "array", "description": "UIDs currently blocking this chat (0-2)" },
+        "typingBy": { "type": "object", "description": "Map of UID to boolean typing state" },
+        "unreadCounts": { "type": "object", "description": "Map of UID to integer unread count" },
+        "lastMessageCiphertext": { "type": "string", "description": "Base64 E2EE ciphertext for last message preview" },
+        "lastMessageNonce": { "type": "string", "description": "Base64 AES-GCM IV for last message preview" },
+        "lastMessageSenderUid": { "type": "string", "description": "Sender UID of last message" },
+        "lastMessageType": { "type": "string", "enum": ["text", "mood", ""] },
+        "lastMessageStatus": { "type": "string", "enum": ["sent", "delivered", "read", ""] },
+        "lastMessageAt": { "type": "string", "format": "date-time", "description": "Server timestamp of last message" },
+        "mipStatus": { "type": "string", "enum": ["none", "pending", "accepted", "declined", "unlinked"] },
+        "mipSenderUid": { "type": "string", "description": "UID of MIP letter sender" },
+        "mipCiphertext": { "type": "string", "description": "Base64 E2EE ciphertext of sealed MIP letter note" },
+        "mipNonce": { "type": "string", "description": "Base64 AES-GCM IV for sealed MIP letter" },
+        "mipUpdatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of MIP update" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["participantUids", "initiatorUid", "status", "participantUsernames", "participantDisplayNames", "participantPublicKeys", "blockedBy", "typingBy", "unreadCounts", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "End-to-end encrypted relay message inside a 1:1 chat with receipts, reactions, delete states, and TTL.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "description": "Parent chat document ID" },
+        "senderUid": { "type": "string", "description": "Sender Firebase Auth UID" },
+        "recipientUid": { "type": "string", "description": "Recipient Firebase Auth UID" },
+        "participantUids": { "type": "array", "description": "Denormalized participant UIDs for subcollection rules" },
+        "type": { "type": "string", "enum": ["text", "mood"] },
+        "ciphertext": { "type": "string", "description": "Base64 AES-GCM encrypted message JSON" },
+        "nonce": { "type": "string", "description": "Base64 12-byte random IV" },
+        "moodId": { "type": "string", "enum": ["angry", "bored", "tired", "sad", "happy"] },
+        "status": { "type": "string", "enum": ["sent", "delivered", "read"] },
+        "deletedFor": { "type": "array", "description": "UIDs who deleted this message for themselves" },
+        "deletedForEveryone": { "type": "boolean", "description": "True when sender deleted message for both participants" },
+        "reactions": { "type": "object", "description": "Map of participant UID to chosen emoji reaction" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
+        "expiresAt": { "type": "string", "format": "date-time", "description": "Firestore TTL expiry timestamp" }
+      },
+      "required": ["chatId", "senderUid", "recipientUid", "participantUids", "type", "ciphertext", "nonce", "status", "deletedFor", "deletedForEveryone", "reactions", "createdAt", "updatedAt", "expiresAt"]
+    },
+    "AbuseReport": {
+      "title": "AbuseReport",
+      "description": "User-submitted safety report containing a reason and optional reporter-selected excerpt.",
+      "type": "object",
+      "properties": {
+        "reporterUid": { "type": "string", "description": "UID of reporting user" },
+        "reportedUid": { "type": "string", "description": "UID of reported user" },
+        "chatId": { "type": "string", "description": "Chat ID where issue occurred" },
+        "reason": { "type": "string", "enum": ["harassment", "spam", "non_consensual", "impersonation", "other"] },
+        "excerpt": { "type": "string", "description": "Optional excerpt chosen by reporter (max 500 chars)" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      },
+      "required": ["reporterUid", "reportedUid", "chatId", "reason", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/usernames/{username}": {
+      "schema": { "$ref": "#/entities/UsernameClaim" },
+      "description": "Atomic unique username index; exact single-doc get only."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile isolated to the authenticated owner."
+    },
+    "/users/{userId}/blocks/{blockedUid}": {
+      "schema": { "$ref": "#/entities/BlockRecord" },
+      "description": "Per-user blocked users subcollection."
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/ChatThread" },
+      "description": "1:1 couple chat thread metadata, typing state, and MIP letter state."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Encrypted 1:1 chat message relay subcollection."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/AbuseReport" },
+      "description": "Safety reports filed by authenticated users."
+    }
+  }
+}
