@@ -15,14 +15,16 @@ object FeatureFlags {
   const val MOOD_CATS = true
   const val LOCAL_NEW_MESSAGE_ALERTS = true
 
+  // Phase 1+ active capabilities
+  const val PRESENCE_LAST_ACTIVE = true
+  const val PUSH_FCM_REMOTE = true
+  const val AUDIO_VIDEO_CALLS = true
+
   // Phase 2+ seams (inert)
   const val VOICE_NOTES = false
   const val PHOTO_MESSAGES = false
-  const val AUDIO_VIDEO_CALLS = false
-  const val PRESENCE_LAST_ACTIVE = false
   const val SCHEDULED_MESSAGES = false
   const val DISAPPEARING_MESSAGES = false
   const val SHARED_CALENDAR = false
-  const val PUSH_FCM_REMOTE = false
   const val MULTI_DEVICE_KEY_BACKUP = false
 }

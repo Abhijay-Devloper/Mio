@@ -63,7 +63,6 @@ async function seedAcceptedChat() {
         [BOB_UID]: "bob_pub_key_base64_1234567890",
       },
       blockedBy: [],
-      typingBy: { [ALICE_UID]: false, [BOB_UID]: false },
       unreadCounts: { [ALICE_UID]: 0, [BOB_UID]: 0 },
       createdAt: created,
       updatedAt: created,
@@ -145,6 +144,24 @@ test("Private user profile: owner-only access, 18+ required, no cross-user read"
   );
 
   await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).get());
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      fcmToken: "sample_fcm_token_value_12345",
+      updatedAt: pastDate(),
+    })
+  );
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      fcmToken: "x".repeat(513),
+      updatedAt: pastDate(),
+    })
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).update({
+      fcmToken: "hijacked_token",
+      updatedAt: pastDate(),
+    })
+  );
   await assertFails(bobDb.collection("users").doc(ALICE_UID).get());
   await assertFails(aliceDb.collection("users").get());
 });
@@ -209,7 +226,6 @@ test("Chat lifecycle: lookup, pre-check missing chat, invite, receiver accept, b
         [BOB_UID]: "bob_pub_key_base64_1234567890",
       },
       blockedBy: [],
-      typingBy: { [ALICE_UID]: false, [BOB_UID]: false },
       unreadCounts: { [ALICE_UID]: 0, [BOB_UID]: 0 },
       createdAt: now,
       updatedAt: now,
@@ -255,6 +271,14 @@ test("Chat lifecycle: lookup, pre-check missing chat, invite, receiver accept, b
       bobChats.size !== 1 || bobChats.docs[0].data().status !== "accepted") {
     throw new Error("Expected both sender and receiver to see the accepted chat");
   }
+
+  // Typing & presence must live in RTDB; Firestore denies typingBy writes on chats
+  await assertFails(
+    aliceDb.collection("chats").doc(CHAT_ID).update({
+      typingBy: { [ALICE_UID]: true, [BOB_UID]: false },
+      updatedAt: pastDate(),
+    })
+  );
 
   // Alice sends an encrypted message
   const msgRef = aliceDb.collection("chats").doc(CHAT_ID).collection("messages").doc("msg_1");
@@ -419,7 +443,6 @@ test("Blocked user cannot request chat, send messages, or send MIP letters", asy
         [BOB_UID]: "bob_pub_key_base64_1234567890",
       },
       blockedBy: [],
-      typingBy: { [ALICE_UID]: false, [BOB_UID]: false },
       unreadCounts: { [ALICE_UID]: 0, [BOB_UID]: 0 },
       createdAt: pastDate(),
       updatedAt: pastDate(),

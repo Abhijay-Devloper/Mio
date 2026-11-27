@@ -10,3 +10,7 @@
 -keepclassmembers class com.example.data.model.** {
     *;
 }
+
+# Preserve native WebRTC JNI bindings and callbacks in release builds
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**

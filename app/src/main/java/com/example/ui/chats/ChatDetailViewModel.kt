@@ -4,18 +4,22 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.config.CatMood
 import com.example.core.config.MioConstants
+import com.example.core.config.MioCopy
 import com.example.core.feedback.MoodFeedbackManager
 import com.example.data.local.UserSettingsStore
 import com.example.data.model.ChatMessage
+import com.example.data.model.ChatRequestStatus
 import com.example.data.model.ChatThreadPreview
 import com.example.data.model.MessageContent
 import com.example.data.model.MessageStatus
+import com.example.data.model.PresenceStatus
 import com.example.data.model.ReplyQuote
 import com.example.data.model.ReportReason
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
 import com.example.data.remote.ChatService
 import com.example.data.remote.MipService
+import com.example.data.remote.PresenceService
 import com.example.data.remote.toHumanMessage
 import com.example.data.remote.unwrapFirestoreError
 import kotlinx.coroutines.CoroutineScope
@@ -24,11 +28,13 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -40,6 +46,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatDetailViewModel(
   private val chatService: ChatService,
+  private val presenceService: PresenceService,
   private val mipService: MipService,
   private val moodFeedbackManager: MoodFeedbackManager?,
   private val preferences: UserSettingsStore,
@@ -56,8 +63,78 @@ class ChatDetailViewModel(
   private val seenMoodIds = mutableSetOf<String>()
   private var initialMessagesSynced = false
 
-  val chatState: StateFlow<UiState<ChatThreadPreview?>> = chatService.observeChat(chatId, currentUserId)
-    .map<ChatThreadPreview?, UiState<ChatThreadPreview?>> { UiState.Success(it) }
+  private val baseChatFlow: Flow<ChatThreadPreview?> = chatService.observeChat(chatId, currentUserId)
+
+  init {
+    viewModelScope.launch {
+      baseChatFlow
+        .map { chat ->
+          if (
+            chat != null &&
+            chat.lastMessageSenderUid == currentUserId &&
+            (chat.lastMessageStatus == MessageStatus.DELIVERED || chat.lastMessageStatus == MessageStatus.READ)
+          ) {
+            Triple(chat.chatId, chat.lastMessageStatus, chat.lastMessageTimeMs)
+          } else {
+            null
+          }
+        }
+        .distinctUntilChanged()
+        .catch { /* Handled by chatState */ }
+        .collect { receipt ->
+          if (receipt != null) {
+            chatService.syncOutgoingReceiptStatus(
+              chatId = receipt.first,
+              myUid = currentUserId,
+              lastMessageStatus = receipt.second,
+              lastMessageTimeMs = receipt.third,
+            )
+          }
+        }
+    }
+  }
+
+  private val rtdbOverlayFlow: Flow<Pair<PresenceStatus?, Boolean>> = baseChatFlow
+    .map { chat ->
+      if (chat != null && chat.status == ChatRequestStatus.ACCEPTED && !chat.isBlockedAny) {
+        chat.chatId to chat.partnerUid
+      } else {
+        null
+      }
+    }
+    .distinctUntilChanged()
+    .flatMapLatest { pair ->
+      if (pair == null) {
+        flowOf(null to false)
+      } else {
+        combine(
+          presenceService.observeUserStatus(pair.second),
+          presenceService.observeTyping(pair.first, pair.second),
+        ) { status, typing -> status to typing }
+      }
+    }
+
+  val chatState: StateFlow<UiState<ChatThreadPreview?>> = combine(
+    baseChatFlow,
+    rtdbOverlayFlow,
+  ) { chat, (presence, typing) ->
+    val enriched = chat?.let {
+      if (it.status == ChatRequestStatus.ACCEPTED && !it.isBlockedAny) {
+        it.copy(
+          partnerTyping = typing,
+          partnerOnline = presence?.isOnline == true,
+          partnerLastActiveMs = presence?.lastActiveMs ?: 0L,
+        )
+      } else {
+        it.copy(
+          partnerTyping = false,
+          partnerOnline = false,
+          partnerLastActiveMs = 0L,
+        )
+      }
+    }
+    UiState.Success(enriched) as UiState<ChatThreadPreview?>
+  }
     .catch { error ->
       val root = unwrapFirestoreError(error) ?: throw error
       emit(UiState.Error(toHumanMessage(root, "Unable to open conversation.")))
@@ -141,12 +218,22 @@ class ChatDetailViewModel(
     }
   }
 
+  fun clearTypingIndicator() {
+    typingJob?.cancel()
+    if (isTypingSent) {
+      isTypingSent = false
+      viewModelScope.launch {
+        presenceService.setTyping(chatId, currentUserId, false)
+      }
+    }
+  }
+
   fun onComposerTextChanged(text: String) {
     typingJob?.cancel()
     if (text.isBlank()) {
       if (isTypingSent) {
         isTypingSent = false
-        viewModelScope.launch { chatService.setTyping(chatId, currentUserId, false) }
+        viewModelScope.launch { presenceService.setTyping(chatId, currentUserId, false) }
       }
       return
     }
@@ -154,12 +241,12 @@ class ChatDetailViewModel(
     if (!isTypingSent || (now - lastTypingWriteMs) >= MioConstants.TYPING_THROTTLE_MS) {
       lastTypingWriteMs = now
       isTypingSent = true
-      viewModelScope.launch { chatService.setTyping(chatId, currentUserId, true) }
+      viewModelScope.launch { presenceService.setTyping(chatId, currentUserId, true) }
     }
     typingJob = viewModelScope.launch {
       delay(MioConstants.TYPING_IDLE_TIMEOUT_MS)
       isTypingSent = false
-      chatService.setTyping(chatId, currentUserId, false)
+      presenceService.setTyping(chatId, currentUserId, false)
     }
   }
 
@@ -181,10 +268,17 @@ class ChatDetailViewModel(
     _replyQuote.value = null
     _selectedMood.value = null
     typingJob?.cancel()
+    val wasTyping = isTypingSent
     isTypingSent = false
 
     viewModelScope.launch {
+      if (wasTyping) {
+        presenceService.setTyping(chatId, currentUserId, false)
+      }
       chatService.sendMessage(chat, myProfile, content, quote)
+        .onSuccess {
+          preferences.setChatClearedAt(currentUserId, chat.chatId, 0L)
+        }
         .onFailure { err ->
           _bannerNotice.value = toHumanMessage(err, "Message could not be sent.")
         }
@@ -225,6 +319,22 @@ class ChatDetailViewModel(
       chatService.deleteMessageForEveryone(chatId, messageId, currentUserId)
         .onFailure { err ->
           _bannerNotice.value = toHumanMessage(err, "Could not delete for everyone.")
+        }
+    }
+  }
+
+  fun clearChatHistory(chat: ChatThreadPreview) {
+    viewModelScope.launch {
+      val watermark = maxOf(chat.lastMessageTimeMs, 1L)
+      preferences.setChatClearedAt(currentUserId, chat.chatId, watermark)
+      chatService.clearChatMessages(chat.chatId, currentUserId)
+        .onSuccess {
+          lastMarkedReadIds.clear()
+          seenMoodIds.clear()
+          _replyQuote.value = null
+        }
+        .onFailure { err ->
+          _bannerNotice.value = toHumanMessage(err, "Could not delete chat history.")
         }
     }
   }
@@ -335,7 +445,7 @@ class ChatDetailViewModel(
     if (isTypingSent) {
       isTypingSent = false
       CoroutineScope(Dispatchers.IO + NonCancellable).launch {
-        chatService.setTyping(chatId, currentUserId, false)
+        presenceService.setTyping(chatId, currentUserId, false)
       }
     }
   }

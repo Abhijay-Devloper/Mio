@@ -81,6 +81,13 @@ data class ChatMessage(
   val timestampMs: Long,
 )
 
+data class PresenceStatus(
+  val state: String = "offline",
+  val lastActiveMs: Long = 0L,
+) {
+  val isOnline: Boolean get() = state == "online"
+}
+
 data class ChatThreadPreview(
   val chatId: String,
   val partnerUid: String,
@@ -92,6 +99,8 @@ data class ChatThreadPreview(
   val blockedByMe: Boolean,
   val blockedByPartner: Boolean,
   val partnerTyping: Boolean,
+  val partnerOnline: Boolean = false,
+  val partnerLastActiveMs: Long = 0L,
   val unreadCount: Int,
   val lastMessagePreview: String,
   val lastMessageSenderUid: String,

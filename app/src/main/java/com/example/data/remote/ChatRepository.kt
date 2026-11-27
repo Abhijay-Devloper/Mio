@@ -7,6 +7,7 @@ import com.example.core.config.MioCopy
 import com.example.core.crypto.CryptoService
 import com.example.data.local.LocalMessageDao
 import com.example.data.local.LocalMessageEntity
+import com.example.data.model.BlockRecord
 import com.example.data.model.ChatMessage
 import com.example.data.model.ChatMessageDoc
 import com.example.data.model.ChatRequestStatus
@@ -70,12 +71,20 @@ interface ChatService {
     unreadMessageIds: List<String>,
     updateLastMessagePreviewStatus: Boolean,
   )
-  suspend fun setTyping(chatId: String, myUid: String, typing: Boolean)
+  suspend fun syncOutgoingReceiptStatus(
+    chatId: String,
+    myUid: String,
+    lastMessageStatus: MessageStatus?,
+    lastMessageTimeMs: Long,
+  )
   suspend fun toggleReaction(chatId: String, messageId: String, myUid: String, emoji: String): Result<Unit>
   suspend fun deleteMessageForMe(chatId: String, messageId: String, myUid: String): Result<Unit>
   suspend fun deleteMessageForEveryone(chatId: String, messageId: String, myUid: String): Result<Unit>
+  suspend fun clearChatMessages(chatId: String, myUid: String): Result<Unit>
   suspend fun blockUser(chatId: String, myUid: String, partnerUid: String, partnerUsername: String): Result<Unit>
   suspend fun unblockUser(chatId: String, myUid: String, partnerUid: String): Result<Unit>
+  fun observeBlockedUsers(myUid: String): Flow<List<BlockRecord>>
+  suspend fun unblockUserRecord(myUid: String, blockedUid: String): Result<Unit>
   suspend fun submitReport(
     myUid: String,
     reportedUid: String,
@@ -215,17 +224,24 @@ class FirebaseChatRepository(
     remoteDocs: List<ChatMessageDoc>,
   ) {
     val entitiesToUpsert = mutableListOf<LocalMessageEntity>()
-    val toMarkDelivered = mutableListOf<String>()
+    val incomingSavedRelayDocs = mutableListOf<ChatMessageDoc>()
 
     for (doc in remoteDocs) {
       val existingLocal = localMessageDao.getById(doc.id, myUid)
       val deletedForMe = (myUid in doc.deletedFor) || (existingLocal?.deletedForMe == true)
+      if (deletedForMe) {
+        if (existingLocal != null) {
+          localMessageDao.deleteById(doc.id, myUid)
+        }
+        continue
+      }
       val timestampMs = doc.createdAt?.toDate()?.time ?: existingLocal?.timestampMs ?: System.currentTimeMillis()
 
       var textBody = existingLocal?.textBody ?: ""
       var replyId = existingLocal?.replyToMessageId
       var replySender = existingLocal?.replyToSenderName
       var replySnippet = existingLocal?.replyToSnippet
+      var decryptedOk = true
 
       if (doc.deletedForEveryone) {
         textBody = ""
@@ -246,6 +262,7 @@ class FirebaseChatRepository(
             replySnippet = parsed.replyToSnippet
           } catch (e: Exception) {
             Log.w(TAG, "Unable to decrypt message ${doc.id}: ${e.javaClass.simpleName}")
+            decryptedOk = false
             if (textBody.isBlank()) {
               textBody = UNDECRYPTED_PLACEHOLDER
             }
@@ -253,8 +270,19 @@ class FirebaseChatRepository(
         }
       }
 
-      if (doc.recipientUid == myUid && doc.status == MessageStatus.SENT.wire) {
-        toMarkDelivered.add(doc.id)
+      val resolvedStatus = if (
+        doc.recipientUid == myUid &&
+        decryptedOk &&
+        !doc.deletedForEveryone &&
+        doc.status == MessageStatus.SENT.wire
+      ) {
+        MessageStatus.DELIVERED.wire
+      } else {
+        doc.status
+      }
+
+      if (doc.recipientUid == myUid && decryptedOk && !doc.deletedForEveryone) {
+        incomingSavedRelayDocs.add(doc)
       }
 
       val reactionsJson = if (doc.deletedForEveryone) {
@@ -276,7 +304,7 @@ class FirebaseChatRepository(
           replyToMessageId = replyId,
           replyToSenderName = replySender,
           replyToSnippet = replySnippet,
-          status = doc.status,
+          status = resolvedStatus,
           deletedForMe = deletedForMe,
           deletedForEveryone = doc.deletedForEveryone,
           reactionsJson = reactionsJson,
@@ -289,19 +317,41 @@ class FirebaseChatRepository(
       localMessageDao.upsertAll(entitiesToUpsert)
     }
 
-    // Mark incoming messages as delivered once persisted locally
-    for (msgId in toMarkDelivered) {
-      try {
-        db.collection("chats").document(chatId)
-          .collection("messages").document(msgId)
-          .update(
-            mapOf(
-              "status" to MessageStatus.DELIVERED.wire,
-              "updatedAt" to FieldValue.serverTimestamp(),
-            )
-          ).await()
-      } catch (_: Exception) {
-        // Non-fatal: next sync will retry delivery receipt
+    // Write delivered ack and delete the short-term relay doc once persisted locally
+    if (incomingSavedRelayDocs.isNotEmpty()) {
+      val chatRef = db.collection("chats").document(chatId)
+      var shouldUpdateChatDelivered = false
+      for (doc in incomingSavedRelayDocs) {
+        val msgRef = chatRef.collection("messages").document(doc.id)
+        if (doc.status == MessageStatus.SENT.wire) {
+          shouldUpdateChatDelivered = true
+          runCatching {
+            msgRef.update(
+              mapOf(
+                "status" to MessageStatus.DELIVERED.wire,
+                "updatedAt" to FieldValue.serverTimestamp(),
+              )
+            ).await()
+          }
+        }
+        runCatching {
+          msgRef.delete().await()
+        }
+      }
+      if (shouldUpdateChatDelivered) {
+        runCatching {
+          val chatSnap = chatRef.get().await()
+          val lastSender = chatSnap.getString("lastMessageSenderUid")
+          val lastStatus = chatSnap.getString("lastMessageStatus")
+          if (lastSender != null && lastSender != myUid && lastStatus == MessageStatus.SENT.wire) {
+            chatRef.update(
+              mapOf(
+                "lastMessageStatus" to MessageStatus.DELIVERED.wire,
+                "updatedAt" to FieldValue.serverTimestamp(),
+              )
+            ).await()
+          }
+        }
       }
     }
   }
@@ -384,7 +434,6 @@ class FirebaseChatRepository(
         "participantDisplayNames" to mapOf(uid to myDisplay, target.uid to targetDisplay),
         "participantPublicKeys" to mapOf(uid to myPublicKey, target.uid to target.publicKey),
         "blockedBy" to emptyList<String>(),
-        "typingBy" to mapOf(uid to false, target.uid to false),
         "unreadCounts" to mapOf(uid to 0L, target.uid to 0L),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp(),
@@ -574,7 +623,6 @@ class FirebaseChatRepository(
           "lastMessageStatus" to MessageStatus.SENT.wire,
           "lastMessageAt" to FieldValue.serverTimestamp(),
           "unreadCounts.${chat.partnerUid}" to FieldValue.increment(1L),
-          "typingBy.$myUid" to false,
           "updatedAt" to FieldValue.serverTimestamp(),
         ),
       )
@@ -598,19 +646,13 @@ class FirebaseChatRepository(
   ) {
     try {
       if (auth.currentUser?.uid != myUid) return
+      localMessageDao.markIncomingAsRead(
+        chatId = chatId,
+        ownerUid = myUid,
+        readStatus = MessageStatus.READ.wire,
+      )
+
       val chatRef = db.collection("chats").document(chatId)
-      val batch = db.batch()
-
-      for (msgId in unreadMessageIds.take(MioConstants.MESSAGES_QUERY_LIMIT.toInt())) {
-        batch.update(
-          chatRef.collection("messages").document(msgId),
-          mapOf(
-            "status" to MessageStatus.READ.wire,
-            "updatedAt" to FieldValue.serverTimestamp(),
-          ),
-        )
-      }
-
       val chatUpdates = mutableMapOf<String, Any>(
         "unreadCounts.$myUid" to 0L,
         "updatedAt" to FieldValue.serverTimestamp(),
@@ -618,8 +660,20 @@ class FirebaseChatRepository(
       if (unreadMessageIds.isNotEmpty() && updateLastMessagePreviewStatus) {
         chatUpdates["lastMessageStatus"] = MessageStatus.READ.wire
       }
-      batch.update(chatRef, chatUpdates)
-      batch.commit().await()
+      chatRef.update(chatUpdates).await()
+
+      // Best-effort update any relay docs not yet deleted; ignore NOT_FOUND.
+      for (msgId in unreadMessageIds.take(MioConstants.MESSAGES_QUERY_LIMIT.toInt())) {
+        runCatching {
+          chatRef.collection("messages").document(msgId)
+            .update(
+              mapOf(
+                "status" to MessageStatus.READ.wire,
+                "updatedAt" to FieldValue.serverTimestamp(),
+              ),
+            ).await()
+        }
+      }
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
@@ -627,20 +681,34 @@ class FirebaseChatRepository(
     }
   }
 
-  override suspend fun setTyping(chatId: String, myUid: String, typing: Boolean) {
-    try {
-      if (auth.currentUser?.uid != myUid) return
-      db.collection("chats").document(chatId)
-        .update(
-          mapOf(
-            "typingBy.$myUid" to typing,
-            "updatedAt" to FieldValue.serverTimestamp(),
-          ),
-        ).await()
-    } catch (e: CancellationException) {
-      throw e
-    } catch (_: Exception) {
-      // Typing indicator updates are best-effort
+  override suspend fun syncOutgoingReceiptStatus(
+    chatId: String,
+    myUid: String,
+    lastMessageStatus: MessageStatus?,
+    lastMessageTimeMs: Long,
+  ) {
+    if (chatId.isBlank() || myUid.isBlank()) return
+    val effectiveUpTo = if (lastMessageTimeMs > 0L) lastMessageTimeMs + 10_000L else System.currentTimeMillis()
+    when (lastMessageStatus) {
+      MessageStatus.DELIVERED -> {
+        localMessageDao.promoteOutgoingStatusUpTo(
+          chatId = chatId,
+          ownerUid = myUid,
+          newStatus = MessageStatus.DELIVERED.wire,
+          eligibleStatuses = listOf(MessageStatus.SENT.wire),
+          upToMs = effectiveUpTo,
+        )
+      }
+      MessageStatus.READ -> {
+        localMessageDao.promoteOutgoingStatusUpTo(
+          chatId = chatId,
+          ownerUid = myUid,
+          newStatus = MessageStatus.READ.wire,
+          eligibleStatuses = listOf(MessageStatus.SENT.wire, MessageStatus.DELIVERED.wire),
+          upToMs = effectiveUpTo,
+        )
+      }
+      else -> Unit
     }
   }
 
@@ -690,7 +758,7 @@ class FirebaseChatRepository(
     val path = "chats/$chatId/messages/$messageId"
     return try {
       requireUserId()
-      localMessageDao.markDeletedForMe(messageId, myUid)
+      localMessageDao.deleteById(messageId, myUid)
       try {
         db.collection("chats").document(chatId)
           .collection("messages").document(messageId)
@@ -735,6 +803,88 @@ class FirebaseChatRepository(
           throw e
         }
       }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  override suspend fun clearChatMessages(chatId: String, myUid: String): Result<Unit> {
+    val path = "chats/$chatId/messages"
+    return try {
+      val signedInUid = requireUserId()
+      check(signedInUid == myUid) { "User mismatch" }
+
+      // Strictly remove every message row for this conversation from Room internal storage
+      localMessageDao.deleteChatMessages(chatId, myUid)
+
+      // Mark remote relay documents as deleted for this user (or remove them if the partner also deleted)
+      var lastDoc: DocumentSnapshot? = null
+      while (true) {
+        var query = db.collection("chats").document(chatId)
+          .collection("messages")
+          .whereArrayContains("participantUids", myUid)
+          .limit(MioConstants.MESSAGES_QUERY_LIMIT)
+        if (lastDoc != null) {
+          query = query.startAfter(lastDoc)
+        }
+        val snap = query.get().await()
+        if (snap.isEmpty) break
+
+        val batch = db.batch()
+        var hasWrites = false
+        for (doc in snap.documents) {
+          val deletedFor = (doc.get("deletedFor") as? List<*>)
+            ?.filterIsInstance<String>()
+            .orEmpty()
+          val participants = (doc.get("participantUids") as? List<*>)
+            ?.filterIsInstance<String>()
+            .orEmpty()
+          val otherUid = participants.firstOrNull { it != myUid }
+          if (otherUid != null && otherUid in deletedFor) {
+            batch.delete(doc.reference)
+            hasWrites = true
+          } else if (myUid !in deletedFor) {
+            batch.update(
+              doc.reference,
+              mapOf(
+                "deletedFor" to FieldValue.arrayUnion(myUid),
+                "updatedAt" to FieldValue.serverTimestamp(),
+              ),
+            )
+            hasWrites = true
+          }
+        }
+        if (hasWrites) {
+          batch.commit().await()
+        }
+        if (snap.size() < MioConstants.MESSAGES_QUERY_LIMIT.toInt()) break
+        lastDoc = snap.documents.last()
+      }
+
+      // Best-effort clear unread counter without deleting the chat thread itself
+      try {
+        val chatSnap = db.collection("chats").document(chatId).get().await()
+        val status = chatSnap.getString("status")
+        val blockedBy = (chatSnap.get("blockedBy") as? List<*>).orEmpty()
+        val unreadMap = chatSnap.get("unreadCounts") as? Map<*, *>
+        val myUnread = (unreadMap?.get(myUid) as? Number)?.toLong() ?: 0L
+        if (status == ChatRequestStatus.ACCEPTED.wire && blockedBy.isEmpty() && myUnread > 0L) {
+          db.collection("chats").document(chatId)
+            .update(
+              mapOf(
+                "unreadCounts.$myUid" to 0L,
+                "updatedAt" to FieldValue.serverTimestamp(),
+              ),
+            ).await()
+        }
+      } catch (_: Exception) {
+        // Non-fatal if blocked or pending; UI still masks cleared unread state
+      }
+
       Result.success(Unit)
     } catch (e: CancellationException) {
       throw e
@@ -799,6 +949,68 @@ class FirebaseChatRepository(
       throw e
     } catch (e: Exception) {
       handleFirestoreError(e, OperationType.WRITE, path)
+      Result.failure(e)
+    }
+  }
+
+  override fun observeBlockedUsers(myUid: String): Flow<List<BlockRecord>> = flow {
+    if (myUid.isBlank()) {
+      emit(emptyList())
+      return@flow
+    }
+    val path = "users/$myUid/blocks"
+    emitAll(
+      db.collection("users").document(myUid).collection("blocks")
+        .limit(MioConstants.CHATS_QUERY_LIMIT)
+        .snapshots()
+        .map { snapshot ->
+          snapshot.toObjects(
+            BlockRecord::class.java,
+            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
+          )
+        }
+        .catch { error ->
+          val root = unwrapFirestoreError(error)
+          if (root == null) throw error
+          if (auth.currentUser?.uid == myUid) {
+            handleFirestoreError(root, OperationType.LIST, path)
+          }
+          throw error
+        }
+    )
+  }
+
+  override suspend fun unblockUserRecord(myUid: String, blockedUid: String): Result<Unit> {
+    val path = "users/$myUid/blocks/$blockedUid"
+    return try {
+      requireUserId()
+      val batch = db.batch()
+      val blockRef = db.collection("users").document(myUid).collection("blocks").document(blockedUid)
+      batch.delete(blockRef)
+
+      val chatsSnap = db.collection("chats")
+        .whereArrayContains("participantUids", myUid)
+        .limit(MioConstants.CHATS_QUERY_LIMIT)
+        .get()
+        .await()
+      for (chatDoc in chatsSnap.documents) {
+        val participants = (chatDoc.get("participantUids") as? List<*>)?.filterIsInstance<String>().orEmpty()
+        if (blockedUid in participants) {
+          batch.update(
+            chatDoc.reference,
+            mapOf(
+              "blockedBy" to FieldValue.arrayRemove(myUid),
+              "updatedAt" to FieldValue.serverTimestamp(),
+            ),
+          )
+        }
+      }
+      batch.commit().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
       Result.failure(e)
     }
   }
@@ -889,13 +1101,13 @@ class FirebaseChatRepository(
     val partnerPubKey = doc.participantPublicKeys[partnerUid] ?: ""
     val status = ChatRequestStatus.fromWire(doc.status)
     val unread = (doc.unreadCounts[myUid] ?: 0L).toInt()
-    val partnerTyping = doc.typingBy[partnerUid] == true
+    val partnerTyping = false
 
     val lastMessagePreview = when {
       status == ChatRequestStatus.PENDING && doc.initiatorUid == myUid -> MioCopy.PENDING_OUTGOING_BANNER
       status == ChatRequestStatus.PENDING -> "@$partnerUsername ${MioCopy.PENDING_INCOMING_BANNER}"
       status == ChatRequestStatus.DECLINED -> "Invitation declined"
-      doc.lastMessageCiphertext.isBlank() || doc.lastMessageNonce.isBlank() -> "Say hello in your private room"
+      doc.lastMessageCiphertext.isBlank() || doc.lastMessageNonce.isBlank() -> MioCopy.EMPTY_THREAD_PREVIEW
       else -> {
         try {
           val jsonStr = cryptoService.decrypt(

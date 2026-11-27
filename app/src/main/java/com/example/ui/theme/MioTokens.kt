@@ -19,6 +19,9 @@ object MioRadii {
   val md = 16.dp
   val lg = 22.dp
   val bubble = 20.dp
+  val bubbleGrouped = 6.dp
+  val wallpaperCardBottom = 32.dp
+  val headerPill = 24.dp
   val pill = 999.dp
 }
 

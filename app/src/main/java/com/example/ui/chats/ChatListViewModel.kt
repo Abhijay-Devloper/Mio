@@ -3,27 +3,38 @@ package com.example.ui.chats
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.config.MioCopy
+import com.example.core.feedback.ActiveChatTracker
 import com.example.core.feedback.MioNotificationHelper
 import com.example.data.local.MioPreferences
+import com.example.data.model.ChatRequestStatus
 import com.example.data.model.ChatThreadPreview
+import com.example.data.model.PresenceStatus
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
 import com.example.data.model.UsernameClaim
 import com.example.data.remote.ChatService
+import com.example.data.remote.PresenceService
 import com.example.data.remote.toHumanMessage
 import com.example.data.remote.unwrapFirestoreError
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ChatListViewModel(
   private val chatService: ChatService,
+  private val presenceService: PresenceService,
   private val notificationHelper: MioNotificationHelper,
   private val preferences: MioPreferences,
   private val currentUserId: String,
@@ -38,18 +49,90 @@ class ChatListViewModel(
     }
   }
 
-  val chatsState: StateFlow<UiState<List<ChatThreadPreview>>> = chatService.observeChats(currentUserId)
-    .map<List<ChatThreadPreview>, UiState<List<ChatThreadPreview>>> { chats ->
-      notifyIfNewIncomingMessage(chats)
-      UiState.Success(chats)
+  private val baseChatsFlow = combine(
+    chatService.observeChats(currentUserId),
+    preferences.observeClearedChatTimestamps(currentUserId),
+  ) { chats, clearedMap ->
+    val adjusted = chats.map { chat ->
+      val clearedAt = clearedMap[chat.chatId] ?: 0L
+      if (
+        clearedAt > 0L &&
+        chat.status == ChatRequestStatus.ACCEPTED &&
+        chat.lastMessageTimeMs <= clearedAt
+      ) {
+        chat.copy(
+          unreadCount = 0,
+          lastMessagePreview = MioCopy.EMPTY_THREAD_PREVIEW,
+          lastMessageSenderUid = "",
+          lastMessageStatus = null,
+          lastMessageTimeMs = 0L,
+        )
+      } else {
+        chat
+      }
     }
+    notifyIfNewIncomingMessage(adjusted)
+    adjusted
+  }
+
+  private val rtdbOverlayFlow = baseChatsFlow
+    .map { chats ->
+      chats
+        .filter { it.status == ChatRequestStatus.ACCEPTED && !it.isBlockedAny }
+        .map { it.chatId to it.partnerUid }
+        .sortedBy { it.first }
+    }
+    .distinctUntilChanged()
+    .flatMapLatest { activePairs ->
+      if (activePairs.isEmpty()) {
+        flowOf(emptyMap<String, Pair<PresenceStatus?, Boolean>>())
+      } else {
+        combine(
+          activePairs.map { (chatId, partnerUid) ->
+            combine(
+              presenceService.observeUserStatus(partnerUid),
+              presenceService.observeTyping(chatId, partnerUid),
+            ) { status, typing ->
+              chatId to (status to typing)
+            }
+          },
+        ) { entries ->
+          entries.toMap()
+        }
+      }
+    }
+
+  val chatsState: StateFlow<UiState<List<ChatThreadPreview>>> = combine(
+    baseChatsFlow,
+    rtdbOverlayFlow,
+  ) { chats, overlayMap ->
+    val enriched = chats.map { chat ->
+      val overlay = overlayMap[chat.chatId]
+      if (overlay != null && chat.status == ChatRequestStatus.ACCEPTED && !chat.isBlockedAny) {
+        val status = overlay.first
+        val typing = overlay.second
+        chat.copy(
+          partnerTyping = typing,
+          partnerOnline = status?.isOnline == true,
+          partnerLastActiveMs = status?.lastActiveMs ?: 0L,
+        )
+      } else {
+        chat.copy(
+          partnerTyping = false,
+          partnerOnline = false,
+          partnerLastActiveMs = 0L,
+        )
+      }
+    }
+    UiState.Success(enriched) as UiState<List<ChatThreadPreview>>
+  }
     .catch { error ->
       val root = unwrapFirestoreError(error) ?: throw error
       emit(UiState.Error(toHumanMessage(root, "Unable to load conversations.")))
     }
     .stateIn(
       scope = viewModelScope,
-      started = SharingStarted.WhileSubscribed(5000L),
+      started = SharingStarted.Eagerly,
       initialValue = UiState.Loading,
     )
 
@@ -114,25 +197,54 @@ class ChatListViewModel(
     }
   }
 
+  fun clearChatHistory(chat: ChatThreadPreview) {
+    viewModelScope.launch {
+      val watermark = maxOf(chat.lastMessageTimeMs, 1L)
+      preferences.setChatClearedAt(currentUserId, chat.chatId, watermark)
+      chatService.clearChatMessages(chat.chatId, currentUserId)
+        .onSuccess {
+          // Deleted after confirmation without displaying banner message
+        }
+        .onFailure { err ->
+          _actionMessage.value = toHumanMessage(err, "Could not delete chat history.")
+        }
+    }
+  }
+
   private suspend fun notifyIfNewIncomingMessage(chats: List<ChatThreadPreview>) {
     if (!initialLoadDone) {
       chats.forEach { lastNotifiedTimestamps[it.chatId] = it.lastMessageTimeMs }
       initialLoadDone = true
       return
     }
-    val notifyEnabled = preferences.settings.first().notificationsEnabled
-    if (!notifyEnabled) return
+    val settings = preferences.settings.first()
+    val notificationsAllowed = settings.notificationsEnabled &&
+      settings.muteAllUntilMs <= System.currentTimeMillis()
 
     for (chat in chats) {
+      if (chat.unreadCount == 0) {
+        notificationHelper.onChatOpened(chat.chatId)
+      }
+
       val prevTime = lastNotifiedTimestamps[chat.chatId] ?: 0L
-      if (
-        chat.unreadCount > 0 &&
-        chat.lastMessageSenderUid.isNotBlank() &&
-        chat.lastMessageSenderUid != currentUserId &&
-        chat.lastMessageTimeMs > prevTime
-      ) {
+      if (chat.lastMessageTimeMs > prevTime) {
         lastNotifiedTimestamps[chat.chatId] = chat.lastMessageTimeMs
-        notificationHelper.showNewMessageAlert(chat.partnerDisplayName, chat.chatId)
+        val isIncomingUnread = chat.unreadCount > 0 &&
+          chat.lastMessageSenderUid.isNotBlank() &&
+          chat.lastMessageSenderUid != currentUserId
+        if (
+          notificationsAllowed &&
+          isIncomingUnread &&
+          !ActiveChatTracker.isActivelyViewingChat(chat.chatId)
+        ) {
+          notificationHelper.showIncomingChatMessage(
+            chatId = chat.chatId,
+            senderDisplayName = chat.partnerDisplayName,
+            senderUsername = chat.partnerUsername,
+            messageTimestampMs = chat.lastMessageTimeMs,
+            isFromFcm = false,
+          )
+        }
       }
     }
   }

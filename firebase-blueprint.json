@@ -28,6 +28,7 @@
         "mipPartnerUid": { "type": "string", "description": "Optional UID of accepted MIP partner" },
         "mipChatId": { "type": "string", "description": "Optional chatId of accepted MIP chat" },
         "mipCooldownUntil": { "type": "string", "format": "date-time", "description": "Optional cooldown timestamp after MIP unlink" },
+        "fcmToken": { "type": "string", "description": "Optional Firebase Cloud Messaging registration token for push alerts" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
       },

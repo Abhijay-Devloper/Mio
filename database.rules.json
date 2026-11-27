@@ -1,0 +1,111 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "status": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('acceptedPeers').child(auth.uid).child($uid).val() === true)",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.val() === null || newData.hasChildren(['state', 'lastActive'])",
+        "state": {
+          ".validate": "newData.val() === 'online' || newData.val() === 'offline'"
+        },
+        "lastActive": {
+          ".validate": "newData.isNumber()"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
+    "typing": {
+      "$chatId": {
+        "$uid": {
+          ".read": "auth != null && root.child('chatMembers').child($chatId).child(auth.uid).val() === true",
+          ".write": "auth != null && auth.uid === $uid && root.child('chatMembers').child($chatId).child(auth.uid).val() === true",
+          ".validate": "newData.isBoolean() || newData.val() === null"
+        }
+      }
+    },
+    "acceptedPeers": {
+      ".read": false,
+      ".write": false
+    },
+    "chatMembers": {
+      ".read": false,
+      ".write": false
+    },
+    "turnCredentials": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "incomingCalls": {
+      "$userId": {
+        ".read": "auth != null && auth.uid === $userId",
+        "$callId": {
+          ".write": "auth != null && (auth.uid === $userId || (!data.exists() && newData.child('callerId').val() === auth.uid && root.child('acceptedPeers').child(auth.uid).child($userId).val() === true) || (data.exists() && data.child('callerId').val() === auth.uid))",
+          ".validate": "newData.val() === null || (newData.hasChildren(['callId', 'callerId', 'callerName', 'type', 'status', 'createdAt']) && newData.child('callId').val() === $callId && newData.child('callerId').isString() && newData.child('callerName').isString() && newData.child('callerName').val().length <= 60 && (newData.child('type').val() === 'audio' || newData.child('type').val() === 'video') && (newData.child('status').val() === 'connecting' || newData.child('status').val() === 'ringing' || newData.child('status').val() === 'connected' || newData.child('status').val() === 'ended' || newData.child('status').val() === 'declined' || newData.child('status').val() === 'missed') && newData.child('createdAt').isNumber())"
+        }
+      }
+    },
+    "calls": {
+      "$callId": {
+        ".read": "auth != null && (data.child('callerId').val() === auth.uid || data.child('receiverId').val() === auth.uid)",
+        ".write": "auth != null && ((!data.exists() && newData.child('callerId').val() === auth.uid && root.child('acceptedPeers').child(auth.uid).child(newData.child('receiverId').val()).val() === true) || (data.exists() && !newData.exists() && (data.child('callerId').val() === auth.uid || data.child('receiverId').val() === auth.uid)))",
+        ".validate": "newData.val() === null || (newData.hasChildren(['callerId', 'receiverId', 'type', 'status', 'createdAt']) && newData.child('callerId').isString() && newData.child('receiverId').isString() && newData.child('callerId').val() !== newData.child('receiverId').val() && (newData.child('type').val() === 'audio' || newData.child('type').val() === 'video') && (newData.child('status').val() === 'connecting' || newData.child('status').val() === 'ringing' || newData.child('status').val() === 'connected' || newData.child('status').val() === 'ended' || newData.child('status').val() === 'declined' || newData.child('status').val() === 'missed') && newData.child('createdAt').isNumber())",
+        "callerId": {
+          ".validate": "newData.isString()"
+        },
+        "receiverId": {
+          ".validate": "newData.isString()"
+        },
+        "callerName": {
+          ".validate": "newData.isString() && newData.val().length <= 60"
+        },
+        "callerUsername": {
+          ".validate": "newData.isString() && newData.val().length <= 32"
+        },
+        "chatId": {
+          ".validate": "newData.isString() && newData.val().length <= 128"
+        },
+        "type": {
+          ".validate": "newData.val() === 'audio' || newData.val() === 'video'"
+        },
+        "status": {
+          ".write": "auth != null && (auth.uid === data.parent().child('callerId').val() || auth.uid === data.parent().child('receiverId').val())",
+          ".validate": "newData.val() === 'connecting' || newData.val() === 'ringing' || newData.val() === 'connected' || newData.val() === 'ended' || newData.val() === 'declined' || newData.val() === 'missed'"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "endedAt": {
+          ".write": "auth != null && (auth.uid === data.parent().child('callerId').val() || auth.uid === data.parent().child('receiverId').val())",
+          ".validate": "newData.isNumber()"
+        },
+        "offer": {
+          ".write": "auth != null && auth.uid === data.parent().child('callerId').val()",
+          ".validate": "newData.val() === null || (newData.hasChildren(['type', 'sdp']) && newData.child('type').isString() && newData.child('sdp').isString() && newData.child('sdp').val().length <= 32768)"
+        },
+        "answer": {
+          ".write": "auth != null && auth.uid === data.parent().child('receiverId').val()",
+          ".validate": "newData.val() === null || (newData.hasChildren(['type', 'sdp']) && newData.child('type').isString() && newData.child('sdp').isString() && newData.child('sdp').val().length <= 32768)"
+        },
+        "callerCandidates": {
+          "$candidateId": {
+            ".write": "auth != null && auth.uid === data.parent().parent().child('callerId').val()",
+            ".validate": "newData.val() === null || (newData.hasChildren(['sdpMid', 'sdpMLineIndex', 'candidate']) && newData.child('sdpMid').isString() && newData.child('sdpMLineIndex').isNumber() && newData.child('candidate').isString() && newData.child('candidate').val().length <= 2048)"
+          }
+        },
+        "receiverCandidates": {
+          "$candidateId": {
+            ".write": "auth != null && auth.uid === data.parent().parent().child('receiverId').val()",
+            ".validate": "newData.val() === null || (newData.hasChildren(['sdpMid', 'sdpMLineIndex', 'candidate']) && newData.child('sdpMid').isString() && newData.child('sdpMLineIndex').isNumber() && newData.child('candidate').isString() && newData.child('candidate').val().length <= 2048)"
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    }
+  }
+}

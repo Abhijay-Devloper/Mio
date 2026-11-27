@@ -1,14 +1,25 @@
 package com.example.ui.settings
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -16,25 +27,22 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
-import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.NotificationsNone
-import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,339 +53,451 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.R
 import com.example.core.config.MioConstants
 import com.example.core.config.MioCopy
 import com.example.data.local.MioUserSettings
+import com.example.data.model.BlockRecord
 import com.example.data.model.UserProfile
 import com.example.ui.theme.MioColors
 import com.example.ui.theme.MioRadii
 import com.example.ui.theme.MioSpacing
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
   profile: UserProfile,
   keyFingerprint: String,
   settings: MioUserSettings,
+  blockedUsers: List<BlockRecord> = emptyList(),
+  activeMipPartnerName: String? = null,
   isSubmitting: Boolean,
   actionError: String?,
   contentPadding: PaddingValues,
   onUpdateDisplayName: (String) -> Unit,
+  onUpdateProfile: (displayName: String, bio: String, photoUrl: String) -> Unit = { _, _, _ -> },
+  onChangeUsername: (oldName: String, newName: String, onSuccess: () -> Unit) -> Unit = { _, _, _ -> },
+  onCheckUsername: (String, (Boolean) -> Unit) -> Unit = { _, cb -> cb(true) },
+  onUnblockUser: (String) -> Unit = {},
+  onUnlinkMip: () -> Unit = {},
   onToggleHaptics: (Boolean) -> Unit,
   onToggleSounds: (Boolean) -> Unit,
   onToggleNotifications: (Boolean) -> Unit,
+  onToggleShowOnlineStatus: (Boolean) -> Unit,
+  onSetWallpaperPath: (String?) -> Unit,
+  onSetBio: (String) -> Unit = {},
+  onSetProfilePhotoPath: (String?) -> Unit = {},
+  onSetLastActiveEnabled: (Boolean) -> Unit = {},
+  onSetActiveNowEnabled: (Boolean) -> Unit = {},
+  onSetReadReceiptsEnabled: (Boolean) -> Unit = {},
+  onSetTypingIndicatorEnabled: (Boolean) -> Unit = {},
+  onSetWhoCanMessageMe: (String) -> Unit = {},
+  onToggleRestrictedUsername: (String) -> Unit = {},
+  onSetDisappearingTimer: (String) -> Unit = {},
+  onSetScheduledMessagesEnabled: (Boolean) -> Unit = {},
+  onSetMediaAutoDownload: (String) -> Unit = {},
+  onSetWhoCanCallMe: (String) -> Unit = {},
+  onSetCallDataSaverEnabled: (Boolean) -> Unit = {},
+  onSetCallRingtone: (String) -> Unit = {},
+  onSetMipNotificationSounds: (Boolean) -> Unit = {},
+  onSetMipRingtoneSounds: (Boolean) -> Unit = {},
+  onSetMipHelloTune: (Boolean) -> Unit = {},
+  onSetMessagePreviewEnabled: (Boolean) -> Unit = {},
+  onSetCallNotificationsEnabled: (Boolean) -> Unit = {},
+  onSetBirthdayAlertsEnabled: (Boolean) -> Unit = {},
+  onSetMuteAllUntilMs: (Long) -> Unit = {},
+  onSetAppLockEnabled: (Boolean) -> Unit = {},
+  onSetAppLockType: (String) -> Unit = {},
+  onSetAppLockPin: (String) -> Unit = {},
   onOpenPrivacy: () -> Unit,
   onOpenTerms: () -> Unit,
   onSignOut: () -> Unit,
   onDeleteAccount: () -> Unit,
 ) {
   val context = LocalContext.current
-  var showEditNameDialog by rememberSaveable { mutableStateOf(false) }
+  val scope = rememberCoroutineScope()
+
+  // Navigation mode within settings: null = Profile page; false = Settings list; true = Subcategory
+  var inSettingsMode by rememberSaveable { mutableStateOf(false) }
+  var activeCategory by rememberSaveable { mutableStateOf<SettingsSectionKey?>(null) }
+
+  // Dialog states
+  var showEditProfileDialog by rememberSaveable { mutableStateOf(false) }
+  var showChangeUsernameDialog by rememberSaveable { mutableStateOf(false) }
+  var pendingUnblockTarget by remember { mutableStateOf<BlockRecord?>(null) }
+  var showMuteDurationDialog by rememberSaveable { mutableStateOf(false) }
+  var showAppLockDialog by rememberSaveable { mutableStateOf(false) }
   var showDeleteStepOne by rememberSaveable { mutableStateOf(false) }
   var showDeleteStepTwo by rememberSaveable { mutableStateOf(false) }
   var deleteConfirmText by rememberSaveable { mutableStateOf("") }
+  var pendingWallpaperUri by remember { mutableStateOf<Uri?>(null) }
 
-  val notificationLauncher = rememberLauncherForActivityResult(
-    contract = ActivityResultContracts.RequestPermission(),
-  ) { granted ->
-    onToggleNotifications(granted)
+  val wallpaperPickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickVisualMedia(),
+  ) { uri ->
+    if (uri != null) {
+      pendingWallpaperUri = uri
+    }
+  }
+
+  // Handle system back navigation inside Settings
+  BackHandler(enabled = inSettingsMode) {
+    if (activeCategory != null) {
+      activeCategory = null
+    } else {
+      inSettingsMode = false
+    }
   }
 
   Column(
     modifier = Modifier
       .fillMaxSize()
-      .background(MioColors.PlumBase)
+      .background(MioColors.PureBlack)
       .padding(bottom = contentPadding.calculateBottomPadding()),
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
-    // Header bar in MidnightSlate (#262F45)
+    // Top App Bar
     Surface(
-      color = MioColors.MidnightSlate,
+      color = MioColors.PureBlack,
       modifier = Modifier.fillMaxWidth(),
     ) {
-      Column(
+      Row(
         modifier = Modifier
           .statusBarsPadding()
           .widthIn(max = 600.dp)
           .fillMaxWidth()
-          .padding(horizontal = MioSpacing.md, vertical = MioSpacing.md),
+          .padding(horizontal = MioSpacing.md, vertical = MioSpacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        Text(
-          text = "Settings",
-          style = MaterialTheme.typography.headlineMedium,
-          color = MioColors.WarmOffWhite,
-        )
-      }
-    }
-
-    Column(
-      modifier = Modifier
-        .weight(1f)
-        .widthIn(max = 600.dp)
-        .fillMaxWidth()
-        .verticalScroll(rememberScrollState())
-        .padding(horizontal = MioSpacing.md, vertical = MioSpacing.md),
-      verticalArrangement = Arrangement.spacedBy(MioSpacing.md),
-    ) {
-      if (actionError != null) {
-        Surface(
-          shape = RoundedCornerShape(MioRadii.md),
-          color = MioColors.DangerEmber.copy(alpha = 0.14f),
-          border = BorderStroke(1.dp, MioColors.DangerEmber.copy(alpha = 0.5f)),
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          Text(
-            text = actionError,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MioColors.DangerEmber,
-            modifier = Modifier.padding(MioSpacing.sm),
-          )
-        }
-      }
-
-      // Identity Card
-      Surface(
-        shape = RoundedCornerShape(MioRadii.lg),
-        color = MioColors.BurgundySurface,
-        border = BorderStroke(1.dp, MioColors.SubtleBorder),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Row(
-          modifier = Modifier.padding(MioSpacing.md),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = profile.displayName,
-              style = MaterialTheme.typography.titleLarge,
-              color = MioColors.WarmOffWhite,
-            )
-            Text(
-              text = "@${profile.username}",
-              style = MaterialTheme.typography.bodyMedium,
-              color = MioColors.BlushRose,
-            )
-          }
-          IconButton(
-            onClick = { showEditNameDialog = true },
-            modifier = Modifier.testTag("settings_edit_name_button"),
-          ) {
-            Icon(
-              imageVector = Icons.Outlined.Edit,
-              contentDescription = "Edit display name",
-              tint = MioColors.WarmOffWhite,
-            )
-          }
-        }
-      }
-
-      // Device-only E2EE Key Card
-      Surface(
-        shape = RoundedCornerShape(MioRadii.lg),
-        color = MioColors.MidnightSlate,
-        border = BorderStroke(1.dp, MioColors.SlateBorder),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Column(modifier = Modifier.padding(MioSpacing.md)) {
+        if (inSettingsMode) {
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(MioSpacing.xs),
           ) {
-            Icon(
-              imageVector = Icons.Outlined.Key,
-              contentDescription = "Device encryption key",
-              tint = MioColors.TwilightBlue,
-            )
+            IconButton(
+              onClick = {
+                if (activeCategory != null) activeCategory = null
+                else inSettingsMode = false
+              },
+              modifier = Modifier.testTag("settings_back_button"),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "Back",
+                tint = MioColors.PrimaryText,
+              )
+            }
             Text(
-              text = "End-to-End Encryption",
-              style = MaterialTheme.typography.titleMedium,
-              color = MioColors.WarmOffWhite,
+              text = activeCategory?.title ?: "Settings",
+              style = MaterialTheme.typography.titleLarge,
+              color = MioColors.PrimaryText,
+              fontWeight = FontWeight.Bold,
             )
           }
-          Spacer(Modifier.height(MioSpacing.xs))
+        } else {
           Text(
-            text = MioCopy.DEVICE_HISTORY_NOTICE,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MioColors.MutedRose,
+            text = "Profile",
+            style = MaterialTheme.typography.headlineMedium,
+            color = MioColors.PrimaryText,
+            fontWeight = FontWeight.Bold,
           )
-          Spacer(Modifier.height(MioSpacing.xs))
-          Text(
-            text = "Device key fingerprint: $keyFingerprint",
-            style = MaterialTheme.typography.labelMedium,
-            color = MioColors.TwilightBlue,
-          )
+
+          // Top Right Settings Button on Profile Page with requested SVG icon
+          IconButton(
+            onClick = { inSettingsMode = true },
+            modifier = Modifier
+              .size(44.dp)
+              .background(MioColors.CardSurface, CircleShape)
+              .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)), CircleShape)
+              .testTag("profile_top_right_settings_button"),
+          ) {
+            Icon(
+              painter = painterResource(id = R.drawable.ic_settings_sliders),
+              contentDescription = "Settings",
+              tint = MioColors.PrimaryText,
+              modifier = Modifier.size(22.dp),
+            )
+          }
         }
       }
+    }
 
-      // Preferences
+    if (actionError != null) {
       Surface(
-        shape = RoundedCornerShape(MioRadii.lg),
-        color = MioColors.BurgundySurface,
-        border = BorderStroke(1.dp, MioColors.SubtleBorder),
-        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(MioRadii.md),
+        color = MioColors.DangerEmber.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, MioColors.DangerEmber.copy(alpha = 0.5f)),
+        modifier = Modifier
+          .widthIn(max = 600.dp)
+          .fillMaxWidth()
+          .padding(horizontal = MioSpacing.md, vertical = 4.dp),
       ) {
-        Column(modifier = Modifier.padding(MioSpacing.md), verticalArrangement = Arrangement.spacedBy(MioSpacing.sm)) {
-          SettingsToggleRow(
-            icon = Icons.Outlined.Vibration,
-            title = "Mood Cat Haptics",
-            subtitle = "Feel tactile patterns when moods arrive",
-            checked = settings.hapticsEnabled,
-            onCheckedChange = onToggleHaptics,
-            testTag = "settings_haptics_switch",
-          )
-          SettingsToggleRow(
-            icon = Icons.AutoMirrored.Outlined.VolumeUp,
-            title = "Mood Cat Sounds",
-            subtitle = "Play gentle purr & chime cues",
-            checked = settings.soundsEnabled,
-            onCheckedChange = onToggleSounds,
-            testTag = "settings_sounds_switch",
-          )
-          SettingsToggleRow(
-            icon = Icons.Outlined.NotificationsNone,
-            title = "Message Alerts",
-            subtitle = "Show local alerts without plaintext previews",
-            checked = settings.notificationsEnabled,
-            onCheckedChange = { enable ->
-              if (enable && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val granted = ContextCompat.checkSelfPermission(
-                  context,
-                  Manifest.permission.POST_NOTIFICATIONS,
-                ) == PackageManager.PERMISSION_GRANTED
-                if (granted) onToggleNotifications(true)
-                else notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-              } else {
-                onToggleNotifications(enable)
-              }
-            },
-            testTag = "settings_notifications_switch",
+        Text(
+          text = actionError,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MioColors.DangerEmber,
+          modifier = Modifier.padding(MioSpacing.sm),
+        )
+      }
+    }
+
+    // Main Content: Profile Page vs Settings Hub
+    AnimatedContent(
+      targetState = inSettingsMode to activeCategory,
+      transitionSpec = {
+        slideInHorizontally { width -> width } togetherWith slideOutHorizontally { width -> -width }
+      },
+      modifier = Modifier
+        .weight(1f)
+        .widthIn(max = 600.dp)
+        .fillMaxWidth(),
+      label = "SettingsNavAnimation",
+    ) { (isSettings, currentCategory) ->
+      if (!isSettings) {
+        // PROFILE PAGE
+        Column(
+          modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = MioSpacing.md, vertical = MioSpacing.md),
+          verticalArrangement = Arrangement.spacedBy(MioSpacing.md),
+        ) {
+          // Profile Header Card with avatar, details, edit button
+          ProfileHeaderCard(
+            profile = profile,
+            bio = if (profile.bio.isNotBlank()) profile.bio else settings.bio,
+            onEditClick = { showEditProfileDialog = true },
           )
         }
-      }
+      } else if (currentCategory == null) {
+        // SETTINGS 9 CATEGORIES LIST
+        Column(
+          modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = MioSpacing.md, vertical = MioSpacing.md),
+          verticalArrangement = Arrangement.spacedBy(MioSpacing.sm),
+        ) {
+          SettingsSectionKey.entries.forEach { section ->
+            SettingsCategoryCard(
+              section = section,
+              onClick = { activeCategory = section },
+            )
+          }
 
-      // Legal & Trust
-      Surface(
-        shape = RoundedCornerShape(MioRadii.lg),
-        color = MioColors.BurgundySurface,
-        border = BorderStroke(1.dp, MioColors.SubtleBorder),
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Column {
-          SettingsNavRow(
-            icon = Icons.Outlined.Shield,
-            title = "Privacy Policy",
-            subtitle = MioCopy.PRIVACY_DRAFT_BADGE,
-            onClick = onOpenPrivacy,
-            testTag = "settings_privacy_row",
-          )
-          SettingsNavRow(
-            icon = Icons.Outlined.Description,
-            title = "Terms of Service",
-            subtitle = MioCopy.PRIVACY_DRAFT_BADGE,
-            onClick = onOpenTerms,
-            testTag = "settings_terms_row",
-          )
+          Spacer(Modifier.height(MioSpacing.md))
+
+          // Quick Sign Out
+          Button(
+            onClick = onSignOut,
+            colors = ButtonDefaults.buttonColors(containerColor = MioColors.BurgundySurface),
+            shape = RoundedCornerShape(MioRadii.pill),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("settings_sign_out_button"),
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(MioSpacing.xs),
+            ) {
+              Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null, tint = MioColors.PrimaryText)
+              Text("Sign Out", color = MioColors.PrimaryText, fontWeight = FontWeight.Bold)
+            }
+          }
+        }
+      } else {
+        // SPECIFIC CATEGORY VIEW
+        Column(
+          modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = MioSpacing.md, vertical = MioSpacing.md),
+          verticalArrangement = Arrangement.spacedBy(MioSpacing.md),
+        ) {
+          when (currentCategory) {
+            SettingsSectionKey.ACCOUNT -> {
+              AccountSectionContent(
+                profile = profile,
+                keyFingerprint = keyFingerprint,
+                onOpenEditProfile = { showEditProfileDialog = true },
+                onOpenChangeUsername = { showChangeUsernameDialog = true },
+                onOpenWallpaperPicker = { wallpaperPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onDeactivateAccount = {
+                  onToggleShowOnlineStatus(false)
+                  onSignOut()
+                },
+                onDeleteAccount = { showDeleteStepOne = true },
+              )
+            }
+            SettingsSectionKey.PRIVACY -> {
+              PrivacySectionContent(
+                settings = settings,
+                restrictedCount = settings.restrictedUsernames.size,
+                blockedCount = blockedUsers.size,
+                onToggleLastActive = { onSetLastActiveEnabled(it) },
+                onToggleActiveNow = {
+                  onSetActiveNowEnabled(it)
+                  onToggleShowOnlineStatus(it)
+                },
+                onToggleReadReceipts = { onSetReadReceiptsEnabled(it) },
+                onToggleTypingIndicator = { onSetTypingIndicatorEnabled(it) },
+                onSetWhoCanMessageMe = { onSetWhoCanMessageMe(it) },
+                onOpenBlockedUsers = { activeCategory = SettingsSectionKey.BLOCKED },
+              )
+            }
+            SettingsSectionKey.BLOCKED -> {
+              BlockedUsersSectionContent(
+                blockedUsers = blockedUsers,
+                onUnblockClick = { pendingUnblockTarget = it },
+              )
+            }
+            SettingsSectionKey.CHATS -> {
+              ChatsSectionContent(
+                settings = settings,
+                onSetDisappearingTimer = { onSetDisappearingTimer(it) },
+                onToggleScheduledMessages = { onSetScheduledMessagesEnabled(it) },
+                onSetMediaAutoDownload = { onSetMediaAutoDownload(it) },
+                onOpenWallpaperPicker = { wallpaperPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onRemoveWallpaper = { onSetWallpaperPath(null) },
+              )
+            }
+            SettingsSectionKey.CALLS -> {
+              CallsSectionContent(
+                settings = settings,
+                onSetWhoCanCallMe = { onSetWhoCanCallMe(it) },
+                onToggleDataSaver = { onSetCallDataSaverEnabled(it) },
+                onSetCallRingtone = { onSetCallRingtone(it) },
+              )
+            }
+            SettingsSectionKey.MIP -> {
+              MipSectionContent(
+                settings = settings,
+                activeMipPartnerName = activeMipPartnerName,
+                onUnlinkMip = onUnlinkMip,
+                onToggleNotifSounds = { onSetMipNotificationSounds(it) },
+                onToggleRingtone = { onSetMipRingtoneSounds(it) },
+                onToggleHelloTune = {
+                  onSetMipHelloTune(it)
+                  onToggleHaptics(it)
+                },
+              )
+            }
+            SettingsSectionKey.NOTIFICATIONS -> {
+              NotificationsSectionContent(
+                settings = settings,
+                onToggleMessageNotifications = { onToggleNotifications(it) },
+                onToggleMessagePreview = { onSetMessagePreviewEnabled(it) },
+                onToggleCallNotifications = { onSetCallNotificationsEnabled(it) },
+                onToggleBirthdayAlerts = { onSetBirthdayAlertsEnabled(it) },
+                onOpenMuteDurationDialog = { showMuteDurationDialog = true },
+              )
+            }
+            SettingsSectionKey.SECURITY -> {
+              SecuritySectionContent(
+                keyFingerprint = keyFingerprint,
+                settings = settings,
+                onOpenAppLockDialog = { showAppLockDialog = true },
+                onToggleAppLock = { onSetAppLockEnabled(it) },
+              )
+            }
+            SettingsSectionKey.HELP -> {
+              HelpAboutSectionContent(
+                currentUsername = profile.username,
+                onOpenPrivacy = onOpenPrivacy,
+                onOpenTerms = onOpenTerms,
+              )
+            }
+          }
         }
       }
-
-      // Sign Out & Delete Account
-      OutlinedButton(
-        onClick = onSignOut,
-        border = BorderStroke(1.dp, MioColors.SubtleBorder),
-        shape = RoundedCornerShape(MioRadii.pill),
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(50.dp)
-          .testTag("settings_sign_out_button"),
-      ) {
-        Icon(
-          imageVector = Icons.AutoMirrored.Outlined.Logout,
-          contentDescription = "Sign out",
-          tint = MioColors.WarmOffWhite,
-        )
-        Spacer(Modifier.width(MioSpacing.xs))
-        Text("Sign out", color = MioColors.WarmOffWhite)
-      }
-
-      OutlinedButton(
-        onClick = { showDeleteStepOne = true },
-        enabled = !isSubmitting,
-        border = BorderStroke(1.dp, MioColors.DangerEmber.copy(alpha = 0.6f)),
-        shape = RoundedCornerShape(MioRadii.pill),
-        modifier = Modifier
-          .fillMaxWidth()
-          .height(50.dp)
-          .testTag("settings_delete_account_button"),
-      ) {
-        Icon(
-          imageVector = Icons.Outlined.DeleteOutline,
-          contentDescription = "Delete account",
-          tint = MioColors.DangerEmber,
-        )
-        Spacer(Modifier.width(MioSpacing.xs))
-        Text("Delete account", color = MioColors.DangerEmber)
-      }
-      Spacer(Modifier.height(MioSpacing.md))
     }
   }
 
-  if (showEditNameDialog) {
-    var draftName by rememberSaveable(profile.displayName) { mutableStateOf(profile.displayName) }
-    AlertDialog(
-      onDismissRequest = { showEditNameDialog = false },
-      containerColor = MioColors.BurgundySurface,
-      title = { Text("Update display name", color = MioColors.WarmOffWhite) },
-      text = {
-        OutlinedTextField(
-          value = draftName,
-          onValueChange = { draftName = it.take(MioConstants.MAX_DISPLAY_NAME_LENGTH) },
-          singleLine = true,
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MioColors.BlushRose,
-            unfocusedBorderColor = MioColors.SubtleBorder,
-            focusedTextColor = MioColors.WarmOffWhite,
-            unfocusedTextColor = MioColors.WarmOffWhite,
-          ),
-          modifier = Modifier.fillMaxWidth(),
-        )
+  // Dialogs
+  if (showEditProfileDialog) {
+    EditProfileDialog(
+      profile = profile,
+      initialBio = settings.bio,
+      onDismiss = { showEditProfileDialog = false },
+      onSave = { newName, newBio ->
+        onUpdateProfile(newName, newBio, "")
+        onSetBio(newBio)
       },
-      confirmButton = {
-        Button(
-          onClick = {
-            if (draftName.trim().isNotEmpty()) {
-              onUpdateDisplayName(draftName.trim())
-              showEditNameDialog = false
-            }
-          },
-          colors = ButtonDefaults.buttonColors(containerColor = MioColors.CrimsonPrimary),
-          modifier = Modifier.heightIn(min = MioSpacing.minTouchTarget),
-        ) {
-          Text("Save", color = MioColors.WarmOffWhite)
+    )
+  }
+
+  if (showChangeUsernameDialog) {
+    ChangeUsernameDialog(
+      currentUsername = profile.username,
+      onDismiss = { showChangeUsernameDialog = false },
+      onCheckAvailability = onCheckUsername,
+      onChange = { oldName, newName ->
+        onChangeUsername(oldName, newName) {
+          showChangeUsernameDialog = false
         }
       },
-      dismissButton = {
-        TextButton(
-          onClick = { showEditNameDialog = false },
-          modifier = Modifier.heightIn(min = MioSpacing.minTouchTarget),
-        ) {
-          Text("Cancel", color = MioColors.MutedRose)
-        }
+    )
+  }
+
+  pendingUnblockTarget?.let { target ->
+    UnblockConfirmDialog(
+      username = target.blockedUsername,
+      onDismiss = { pendingUnblockTarget = null },
+      onConfirm = {
+        onUnblockUser(target.blockedUid)
+        pendingUnblockTarget = null
+      },
+    )
+  }
+
+  if (showMuteDurationDialog) {
+    MuteAllDurationDialog(
+      onDismiss = { showMuteDurationDialog = false },
+      onSelectDuration = onSetMuteAllUntilMs,
+    )
+  }
+
+  if (showAppLockDialog) {
+    AppLockSetupDialog(
+      initialType = settings.appLockType,
+      onDismiss = { showAppLockDialog = false },
+      onApply = { type, pin ->
+        onSetAppLockType(type)
+        onSetAppLockPin(pin)
+        onSetAppLockEnabled(true)
+      },
+    )
+  }
+
+  pendingWallpaperUri?.let { uri ->
+    WallpaperCropDialog(
+      imageUri = uri,
+      onDismiss = { pendingWallpaperUri = null },
+      onApply = { path ->
+        onSetWallpaperPath(path)
+        pendingWallpaperUri = null
       },
     )
   }
@@ -385,41 +505,30 @@ fun SettingsScreen(
   if (showDeleteStepOne) {
     AlertDialog(
       onDismissRequest = { showDeleteStepOne = false },
-      containerColor = MioColors.BurgundySurface,
-      title = { Text("Delete your Mio account?", color = MioColors.DangerEmber) },
+      containerColor = MioColors.CardSurface,
+      title = { Text("Delete Account?", color = MioColors.DangerEmber) },
       text = {
         Text(
-          text = MioCopy.DELETE_ACCOUNT_WARNING,
+          text = "This will permanently delete your account profile, release your username, and remove all your data. This action cannot be undone.",
           style = MaterialTheme.typography.bodyMedium,
-          color = MioColors.WarmOffWhite,
+          color = MioColors.PrimaryText,
         )
       },
       confirmButton = {
         Button(
           onClick = {
             showDeleteStepOne = false
-            deleteConfirmText = ""
             showDeleteStepTwo = true
           },
           colors = ButtonDefaults.buttonColors(containerColor = MioColors.DangerEmber),
-          modifier = Modifier.heightIn(min = MioSpacing.minTouchTarget),
+          modifier = Modifier.testTag("confirm_delete_step_one"),
         ) {
-          Icon(
-            imageVector = Icons.Outlined.DeleteOutline,
-            contentDescription = null,
-            tint = MioColors.PlumBase,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(Modifier.width(MioSpacing.xxs))
-          Text("Continue", color = MioColors.PlumBase)
+          Text("Continue", color = MioColors.PureBlack)
         }
       },
       dismissButton = {
-        TextButton(
-          onClick = { showDeleteStepOne = false },
-          modifier = Modifier.heightIn(min = MioSpacing.minTouchTarget),
-        ) {
-          Text("Keep account", color = MioColors.MutedRose)
+        TextButton(onClick = { showDeleteStepOne = false }) {
+          Text("Cancel", color = MioColors.MutedText)
         }
       },
     )
@@ -427,61 +536,59 @@ fun SettingsScreen(
 
   if (showDeleteStepTwo) {
     AlertDialog(
-      onDismissRequest = { showDeleteStepTwo = false },
-      containerColor = MioColors.BurgundySurface,
-      title = { Text("Confirm permanent deletion", color = MioColors.DangerEmber) },
+      onDismissRequest = {
+        showDeleteStepTwo = false
+        deleteConfirmText = ""
+      },
+      containerColor = MioColors.CardSurface,
+      title = { Text("Final Confirmation", color = MioColors.DangerEmber) },
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(MioSpacing.sm)) {
           Text(
-            text = "Type DELETE below to permanently erase @${profile.username} and all local history.",
+            text = "Type your username (${profile.username}) to confirm final account deletion:",
             style = MaterialTheme.typography.bodyMedium,
-            color = MioColors.WarmOffWhite,
+            color = MioColors.PrimaryText,
           )
           OutlinedTextField(
             value = deleteConfirmText,
             onValueChange = { deleteConfirmText = it },
-            placeholder = { Text("DELETE") },
             singleLine = true,
             colors = OutlinedTextFieldDefaults.colors(
               focusedBorderColor = MioColors.DangerEmber,
               unfocusedBorderColor = MioColors.SubtleBorder,
-              focusedTextColor = MioColors.WarmOffWhite,
-              unfocusedTextColor = MioColors.WarmOffWhite,
+              focusedTextColor = MioColors.PrimaryText,
+              unfocusedTextColor = MioColors.PrimaryText,
             ),
             modifier = Modifier
               .fillMaxWidth()
-              .testTag("delete_account_confirm_input"),
+              .testTag("delete_confirm_input"),
           )
         }
       },
       confirmButton = {
         Button(
           onClick = {
-            showDeleteStepTwo = false
-            onDeleteAccount()
+            if (deleteConfirmText.trim().lowercase() == profile.username.lowercase()) {
+              showDeleteStepTwo = false
+              deleteConfirmText = ""
+              onDeleteAccount()
+            }
           },
-          enabled = deleteConfirmText.trim() == "DELETE" && !isSubmitting,
+          enabled = deleteConfirmText.trim().lowercase() == profile.username.lowercase() && !isSubmitting,
           colors = ButtonDefaults.buttonColors(containerColor = MioColors.DangerEmber),
-          modifier = Modifier
-            .heightIn(min = MioSpacing.minTouchTarget)
-            .testTag("delete_account_final_confirm_button"),
+          modifier = Modifier.testTag("confirm_delete_final_button"),
         ) {
-          Icon(
-            imageVector = Icons.Outlined.DeleteOutline,
-            contentDescription = "Delete Forever",
-            tint = MioColors.PlumBase,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(Modifier.width(MioSpacing.xxs))
-          Text("Delete Forever", color = MioColors.PlumBase)
+          Text("Delete Permanently", color = MioColors.PureBlack)
         }
       },
       dismissButton = {
         TextButton(
-          onClick = { showDeleteStepTwo = false },
-          modifier = Modifier.heightIn(min = MioSpacing.minTouchTarget),
+          onClick = {
+            showDeleteStepTwo = false
+            deleteConfirmText = ""
+          },
         ) {
-          Text("Cancel", color = MioColors.MutedRose)
+          Text("Cancel", color = MioColors.MutedText)
         }
       },
     )
@@ -489,62 +596,160 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsToggleRow(
-  icon: ImageVector,
-  title: String,
-  subtitle: String,
-  checked: Boolean,
-  onCheckedChange: (Boolean) -> Unit,
-  testTag: String,
+private fun ProfileHeaderCard(
+  profile: UserProfile,
+  bio: String,
+  onEditClick: () -> Unit,
 ) {
-  Row(
+  Surface(
+    shape = RoundedCornerShape(32.dp),
+    color = MioColors.CardSurface,
+    border = BorderStroke(1.dp, MioColors.SubtleBorder),
     modifier = Modifier
       .fillMaxWidth()
-      .heightIn(min = MioSpacing.minTouchTarget),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(MioSpacing.sm),
+      .height(420.dp),
   ) {
-    Icon(imageVector = icon, contentDescription = title, tint = MioColors.BlushRose)
-    Column(modifier = Modifier.weight(1f)) {
-      Text(text = title, style = MaterialTheme.typography.titleMedium, color = MioColors.WarmOffWhite)
-      Text(text = subtitle, style = MaterialTheme.typography.labelMedium, color = MioColors.MutedRose)
-    }
-    Switch(
-      checked = checked,
-      onCheckedChange = onCheckedChange,
-      colors = SwitchDefaults.colors(
-        checkedThumbColor = MioColors.WarmOffWhite,
-        checkedTrackColor = MioColors.CrimsonPrimary,
-        uncheckedThumbColor = MioColors.MutedRose,
-        uncheckedTrackColor = MioColors.PlumBase,
-      ),
-      modifier = Modifier.testTag(testTag),
-    )
-  }
-}
+    Box(modifier = Modifier.fillMaxSize()) {
+      // Background with SVG default profile illustration
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Brush.verticalGradient(listOf(MioColors.PlumBase, MioColors.PureBlack))),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(
+          painter = painterResource(id = R.drawable.ic_default_profile),
+          contentDescription = null,
+          tint = MioColors.RoseAccent,
+          modifier = Modifier.size(96.dp),
+        )
+      }
 
-@Composable
-private fun SettingsNavRow(
-  icon: ImageVector,
-  title: String,
-  subtitle: String,
-  onClick: () -> Unit,
-  testTag: String,
-) {
-  Row(
-    modifier = Modifier
-      .fillMaxWidth()
-      .heightIn(min = MioSpacing.minTouchTarget)
-      .clickable(onClick = onClick)
-      .padding(MioSpacing.md)
-      .testTag(testTag),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(MioSpacing.sm),
-  ) {
-    Icon(imageVector = icon, contentDescription = title, tint = MioColors.TwilightBlue)
-    Column(modifier = Modifier.weight(1f)) {
-      Text(text = title, style = MaterialTheme.typography.titleMedium, color = MioColors.WarmOffWhite)
-      Text(text = subtitle, style = MaterialTheme.typography.labelMedium, color = MioColors.MutedRose)
+      // Bottom Blur / Gradient Overlay
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .height(240.dp)
+          .align(Alignment.BottomCenter)
+          .background(
+            Brush.verticalGradient(
+              colors = listOf(
+                Color.Transparent,
+                MioColors.PureBlack.copy(alpha = 0.8f),
+                MioColors.PureBlack.copy(alpha = 0.98f),
+              )
+            )
+          ),
+      )
+
+      // Content at bottom
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .align(Alignment.BottomCenter)
+          .padding(MioSpacing.lg),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.weight(1f),
+          ) {
+            Text(
+              text = profile.displayName.ifBlank { "Mio User" },
+              style = MaterialTheme.typography.headlineSmall.copy(
+                fontWeight = FontWeight.Bold,
+                color = MioColors.PrimaryText,
+              ),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Icon(
+              imageVector = Icons.Outlined.CheckCircle,
+              contentDescription = "Verified",
+              tint = MioColors.RoseAccent,
+              modifier = Modifier.size(20.dp),
+            )
+          }
+        }
+
+        Text(
+          text = "@${profile.username} • End-to-End Encrypted",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MioColors.MutedText,
+        )
+
+        if (bio.isNotBlank()) {
+          Text(
+            text = bio,
+            style = MaterialTheme.typography.bodySmall,
+            color = MioColors.PrimaryText.copy(alpha = 0.9f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+
+        Spacer(Modifier.height(2.dp))
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(MioSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Favorite,
+                contentDescription = null,
+                tint = MioColors.RoseAccent,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text = "Mio Couple",
+                style = MaterialTheme.typography.labelMedium,
+                color = MioColors.PrimaryText,
+                fontWeight = FontWeight.SemiBold,
+              )
+            }
+          }
+
+          Button(
+            onClick = onEditClick,
+            colors = ButtonDefaults.buttonColors(containerColor = MioColors.PrimaryText),
+            shape = RoundedCornerShape(MioRadii.pill),
+            modifier = Modifier.testTag("profile_edit_button"),
+          ) {
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Edit,
+                contentDescription = null,
+                tint = MioColors.PureBlack,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text = "Edit Profile",
+                color = MioColors.PureBlack,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge,
+              )
+            }
+          }
+        }
+      }
     }
   }
 }

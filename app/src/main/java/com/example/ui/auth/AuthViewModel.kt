@@ -24,6 +24,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Co
 import com.google.firebase.Firebase
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -125,7 +126,7 @@ fun onGoogleSignInClicked(
 fun performSignOut(
   credentialManager: CredentialManager,
   scope: CoroutineScope,
-  onClearLocalArtifacts: () -> Unit = {},
+  onClearLocalArtifacts: suspend () -> Unit = {},
   onSignOutComplete: () -> Unit = {},
 ) {
   scope.launch {
@@ -205,6 +206,75 @@ class ProfileViewModel(
         .onFailure { err -> _actionError.value = toHumanMessage(err, "Could not update name.") }
       _isSubmitting.value = false
     }
+  }
+
+  fun updateProfile(
+    displayName: String,
+    bio: String,
+    photoUrl: String,
+    onSuccess: () -> Unit = {},
+  ) {
+    viewModelScope.launch {
+      _isSubmitting.value = true
+      _actionError.value = null
+      val result = authService.updateProfile(currentUserId, displayName, bio, photoUrl)
+      result.onSuccess { onSuccess() }
+        .onFailure { err -> _actionError.value = toHumanMessage(err, "Could not update profile.") }
+      _isSubmitting.value = false
+    }
+  }
+
+  fun checkUsernameAvailability(username: String, onResult: (Boolean) -> Unit) {
+    viewModelScope.launch {
+      val result = authService.checkUsernameAvailable(username)
+      onResult(result.getOrDefault(false))
+    }
+  }
+
+  fun changeUsername(
+    oldUsername: String,
+    newUsername: String,
+    onSuccess: () -> Unit = {},
+  ) {
+    viewModelScope.launch {
+      _isSubmitting.value = true
+      _actionError.value = null
+      val result = authService.changeUsername(currentUserId, oldUsername, newUsername)
+      result.onSuccess { onSuccess() }
+        .onFailure { err -> _actionError.value = toHumanMessage(err, "Could not change username.") }
+      _isSubmitting.value = false
+    }
+  }
+
+  fun syncCurrentFcmTokenIfNeeded(currentSavedToken: String, pendingToken: String? = null) {
+    viewModelScope.launch {
+      runCatching {
+        val fetched = runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull().orEmpty()
+        val token = fetched.ifBlank { pendingToken.orEmpty() }
+        if (token.isNotBlank() && token != currentSavedToken) {
+          authService.syncFcmToken(currentUserId, token)
+        }
+      }
+    }
+  }
+
+  fun syncNotificationPreferences(
+    notificationsEnabled: Boolean,
+    callNotificationsEnabled: Boolean,
+    muteAllUntilMs: Long,
+  ) {
+    viewModelScope.launch {
+      authService.syncNotificationPreferences(
+        uid = currentUserId,
+        notificationsEnabled = notificationsEnabled,
+        callNotificationsEnabled = callNotificationsEnabled,
+        muteAllUntilMs = muteAllUntilMs,
+      )
+    }
+  }
+
+  suspend fun clearFcmTokenForSignOut() {
+    authService.clearFcmToken(currentUserId)
   }
 
   fun deleteAccount(username: String, onSuccess: () -> Unit) {
