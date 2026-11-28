@@ -89,14 +89,38 @@ class MioCallForegroundService : Service() {
         }
 
         acquireCallLocks()
+        return START_STICKY
+      }
+      null -> {
+        if (CallSessionHolder.activeManager?.activeCall?.value == null) {
+          stopSelfCleanly()
+          return START_NOT_STICKY
+        }
+        acquireCallLocks()
+        return START_STICKY
       }
       else -> {
         if (CallSessionHolder.activeManager?.activeCall?.value == null) {
           stopSelfCleanly()
+          return START_NOT_STICKY
         }
+        return START_STICKY
       }
     }
-    return START_NOT_STICKY
+  }
+
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    val activeCall = CallSessionHolder.activeManager?.activeCall?.value
+    if (activeCall != null) {
+      CallSessionHolder.setMinimized(true)
+      startOrUpdate(
+        context = applicationContext,
+        peerName = activeCall.peerName,
+        isVideo = activeCall.type == CallType.VIDEO && activeCall.isCameraEnabled,
+      )
+      return
+    }
+    super.onTaskRemoved(rootIntent)
   }
 
   override fun onDestroy() {

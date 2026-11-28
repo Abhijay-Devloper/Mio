@@ -61,6 +61,7 @@ object MioConstants {
   const val DEFAULT_BACKEND_TURN_URL =
     "https://asia-southeast1-gen-lang-client-0609526912.cloudfunctions.net/getTurnCredentials"
   const val TURN_FETCH_TIMEOUT_MS = 1_500L
+  const val PUSH_RELAY_TIMEOUT_MS = 5_000L
   const val CALL_RING_TIMEOUT_MS = 45_000L
   const val CALL_CONNECT_TIMEOUT_MS = 25_000L
   const val CALL_STALE_INVITE_MS = 90_000L

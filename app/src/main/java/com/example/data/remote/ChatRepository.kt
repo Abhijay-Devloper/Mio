@@ -30,12 +30,16 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 import java.util.Date
@@ -77,6 +81,8 @@ interface ChatService {
     lastMessageStatus: MessageStatus?,
     lastMessageTimeMs: Long,
   )
+  suspend fun setTyping(chatId: String, myUid: String, typing: Boolean)
+  suspend fun acknowledgeIncomingDelivery(chatId: String, myUid: String, partnerPublicKey: String)
   suspend fun toggleReaction(chatId: String, messageId: String, myUid: String, emoji: String): Result<Unit>
   suspend fun deleteMessageForMe(chatId: String, messageId: String, myUid: String): Result<Unit>
   suspend fun deleteMessageForEveryone(chatId: String, messageId: String, myUid: String): Result<Unit>
@@ -100,6 +106,7 @@ class FirebaseChatRepository(
   private val cryptoService: CryptoService,
   private val localMessageDao: LocalMessageDao,
   private val auth: FirebaseAuth = Firebase.auth,
+  private val pushRelay: PushNotificationRelay = OkHttpPushNotificationRelay(),
 ) : ChatService {
 
   private var lastLookupAtMs: Long = 0L
@@ -628,6 +635,15 @@ class FirebaseChatRepository(
       )
       batch.commit().await()
       localMessageDao.updateStatus(messageId, myUid, MessageStatus.SENT.wire)
+      CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+        pushRelay.notifyNewMessage(
+          chatId = chat.chatId,
+          messageId = messageId,
+          recipientUid = chat.partnerUid,
+          senderDisplayName = myProfile.displayName.ifBlank { myProfile.username },
+          senderUsername = myProfile.username,
+        )
+      }
       Result.success(Unit)
     } catch (e: CancellationException) {
       throw e
@@ -709,6 +725,53 @@ class FirebaseChatRepository(
         )
       }
       else -> Unit
+    }
+  }
+
+  override suspend fun setTyping(chatId: String, myUid: String, typing: Boolean) {
+    if (!MioConstants.SAFE_ID_REGEX.matches(chatId) || !MioConstants.SAFE_ID_REGEX.matches(myUid)) {
+      return
+    }
+    if (auth.currentUser?.uid != myUid) return
+    runCatching {
+      db.collection("chats").document(chatId)
+        .update("typingBy.$myUid", typing)
+        .await()
+    }.onFailure { err ->
+      Log.w(TAG, "Firestore typing update skipped: ${err.javaClass.simpleName}")
+    }
+  }
+
+  override suspend fun acknowledgeIncomingDelivery(
+    chatId: String,
+    myUid: String,
+    partnerPublicKey: String,
+  ) {
+    if (!MioConstants.SAFE_ID_REGEX.matches(chatId) || !MioConstants.SAFE_ID_REGEX.matches(myUid)) {
+      return
+    }
+    if (auth.currentUser?.uid != myUid) return
+    runCatching {
+      val snap = db.collection("chats").document(chatId)
+        .collection("messages")
+        .whereArrayContains("participantUids", myUid)
+        .limit(MioConstants.MESSAGES_QUERY_LIMIT)
+        .get()
+        .await()
+      val remoteDocs = snap.toObjects(
+        ChatMessageDoc::class.java,
+        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE,
+      ).filter { it.recipientUid == myUid && !it.deletedForEveryone }
+      if (remoteDocs.isNotEmpty()) {
+        syncRemoteMessagesToLocal(
+          chatId = chatId,
+          myUid = myUid,
+          partnerPublicKey = partnerPublicKey,
+          remoteDocs = remoteDocs,
+        )
+      }
+    }.onFailure { err ->
+      Log.w(TAG, "Delivery ack skipped: ${err.javaClass.simpleName}")
     }
   }
 
@@ -1101,7 +1164,7 @@ class FirebaseChatRepository(
     val partnerPubKey = doc.participantPublicKeys[partnerUid] ?: ""
     val status = ChatRequestStatus.fromWire(doc.status)
     val unread = (doc.unreadCounts[myUid] ?: 0L).toInt()
-    val partnerTyping = false
+    val partnerTyping = doc.typingBy[partnerUid] == true
 
     val lastMessagePreview = when {
       status == ChatRequestStatus.PENDING && doc.initiatorUid == myUid -> MioCopy.PENDING_OUTGOING_BANNER

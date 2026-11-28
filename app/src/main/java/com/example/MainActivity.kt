@@ -281,7 +281,16 @@ private fun MioRootApp(
   val credentialManager = remember(context) { CredentialManager.create(context) }
   val notificationHelper = remember(context) { MioNotificationHelper(context.applicationContext) }
 
-  var showIntro by rememberSaveable { mutableStateOf(true) }
+  val hasCallContext = CallSessionHolder.activeManager?.activeCall?.value != null ||
+    pendingOpenActiveCall ||
+    pendingAnswerInvite != null ||
+    pendingIncomingInvite != null
+  var showIntro by rememberSaveable { mutableStateOf(!hasCallContext) }
+  LaunchedEffect(hasCallContext) {
+    if (hasCallContext) {
+      showIntro = false
+    }
+  }
   var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
   var unauthLegalPage by rememberSaveable { mutableStateOf<LegalDocumentType?>(null) }
 

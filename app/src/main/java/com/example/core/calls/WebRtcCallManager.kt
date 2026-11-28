@@ -19,6 +19,8 @@ import com.example.data.model.UserProfile
 import com.example.data.remote.CallSignalingService
 import com.example.data.remote.IceServerProvider
 import com.example.data.remote.MeteredIceServerProvider
+import com.example.data.remote.OkHttpPushNotificationRelay
+import com.example.data.remote.PushNotificationRelay
 import com.example.data.remote.RtdbCallSignalingRepository
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +74,7 @@ class WebRtcCallManager(
   ),
   private val iceServerProvider: IceServerProvider = MeteredIceServerProvider(),
   private val audioController: CallAudioController = CallAudioController(context),
+  private val pushRelay: PushNotificationRelay = OkHttpPushNotificationRelay(),
 ) {
 
   private val appContext = context.applicationContext
@@ -262,6 +265,16 @@ class WebRtcCallManager(
         callSessionReadyForCandidates = true
         flushPendingLocalCandidates(callId, isCaller = true)
         signaling.armDisconnectCleanup(callId, receiverId)
+        scope.launch {
+          pushRelay.notifyIncomingCall(
+            callId = callId,
+            chatId = chatId,
+            receiverUid = receiverId,
+            callerName = callerProfile.displayName.ifBlank { callerProfile.username },
+            callerUsername = callerProfile.username,
+            callType = callType,
+          )
+        }
 
         _activeCall.value = _activeCall.value?.let { state ->
           if (state.callId == callId && state.status == CallStatus.CONNECTING) {
@@ -418,6 +431,8 @@ class WebRtcCallManager(
     sessionWatchJob?.cancel()
     candidatesWatchJob?.cancel()
 
+    val wasCaller = isCurrentCaller
+    val wasConnected = _activeCall.value?.status == CallStatus.CONNECTED
     releaseWebRtcResources()
     audioController.restore()
     MioCallForegroundService.stop(appContext)
@@ -433,6 +448,9 @@ class WebRtcCallManager(
 
     if (!callId.isNullOrBlank()) {
       scope.launch {
+        if (wasCaller && !wasConnected && !receiverId.isNullOrBlank()) {
+          pushRelay.notifyCallEnded(callId, receiverId)
+        }
         signaling.updateCallStatus(callId, receiverId, reasonStatus)
         delay(CLEANUP_DELAY_MS)
         signaling.cleanupCallNodes(callId, receiverId)

@@ -8,6 +8,7 @@ import com.example.core.feedback.MioNotificationHelper
 import com.example.data.local.MioPreferences
 import com.example.data.model.ChatRequestStatus
 import com.example.data.model.ChatThreadPreview
+import com.example.data.model.MessageStatus
 import com.example.data.model.PresenceStatus
 import com.example.data.model.UiState
 import com.example.data.model.UserProfile
@@ -41,6 +42,7 @@ class ChatListViewModel(
 ) : ViewModel() {
 
   private val lastNotifiedTimestamps = mutableMapOf<String, Long>()
+  private val lastAckedTimestamps = mutableMapOf<String, Long>()
   private var initialLoadDone = false
 
   init {
@@ -112,7 +114,7 @@ class ChatListViewModel(
         val status = overlay.first
         val typing = overlay.second
         chat.copy(
-          partnerTyping = typing,
+          partnerTyping = chat.partnerTyping || typing,
           partnerOnline = status?.isOnline == true,
           partnerLastActiveMs = status?.lastActiveMs ?: 0L,
         )
@@ -212,6 +214,7 @@ class ChatListViewModel(
   }
 
   private suspend fun notifyIfNewIncomingMessage(chats: List<ChatThreadPreview>) {
+    acknowledgePendingDeliveries(chats)
     if (!initialLoadDone) {
       chats.forEach { lastNotifiedTimestamps[it.chatId] = it.lastMessageTimeMs }
       initialLoadDone = true
@@ -243,6 +246,32 @@ class ChatListViewModel(
             senderUsername = chat.partnerUsername,
             messageTimestampMs = chat.lastMessageTimeMs,
             isFromFcm = false,
+          )
+        }
+      }
+    }
+  }
+
+  private fun acknowledgePendingDeliveries(chats: List<ChatThreadPreview>) {
+    for (chat in chats) {
+      val needsDeliveryAck = chat.status == ChatRequestStatus.ACCEPTED &&
+        !chat.isBlockedAny &&
+        chat.unreadCount > 0 &&
+        chat.lastMessageSenderUid.isNotBlank() &&
+        chat.lastMessageSenderUid != currentUserId &&
+        chat.lastMessageStatus == MessageStatus.SENT &&
+        !ActiveChatTracker.isActivelyViewingChat(chat.chatId)
+      if (!needsDeliveryAck) continue
+
+      val ackKey = maxOf(chat.lastMessageTimeMs, 1L)
+      val prevAcked = lastAckedTimestamps[chat.chatId] ?: 0L
+      if (ackKey > prevAcked) {
+        lastAckedTimestamps[chat.chatId] = ackKey
+        viewModelScope.launch {
+          chatService.acknowledgeIncomingDelivery(
+            chatId = chat.chatId,
+            myUid = currentUserId,
+            partnerPublicKey = chat.partnerPublicKey,
           )
         }
       }

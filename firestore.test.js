@@ -272,7 +272,17 @@ test("Chat lifecycle: lookup, pre-check missing chat, invite, receiver accept, b
     throw new Error("Expected both sender and receiver to see the accepted chat");
   }
 
-  // Typing & presence must live in RTDB; Firestore denies typingBy writes on chats
+  // Own typingBy.<uid> boolean updates succeed; touching partner entry or including updatedAt fails
+  await assertSucceeds(
+    aliceDb.collection("chats").doc(CHAT_ID).update({
+      [`typingBy.${ALICE_UID}`]: true,
+    })
+  );
+  await assertFails(
+    aliceDb.collection("chats").doc(CHAT_ID).update({
+      [`typingBy.${BOB_UID}`]: true,
+    })
+  );
   await assertFails(
     aliceDb.collection("chats").doc(CHAT_ID).update({
       typingBy: { [ALICE_UID]: true, [BOB_UID]: false },

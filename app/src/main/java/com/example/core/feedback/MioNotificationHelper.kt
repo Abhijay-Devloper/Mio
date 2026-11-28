@@ -58,6 +58,8 @@ class MioNotificationHelper(private val context: Context) {
         description = "Alerts when someone sends you a new message."
         setSound(msgSoundUri, msgAudioAttributes)
         enableVibration(true)
+        enableLights(true)
+        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
       }
 
       val silentChannel = NotificationChannel(
@@ -439,6 +441,7 @@ class MioNotificationHelper(private val context: Context) {
         .setContentText(body.ifBlank { MioCopy.NOTIFICATION_NEW_MESSAGE_BODY })
         .setPriority(priority)
         .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setAutoCancel(true)
         .setContentIntent(pendingIntent)
 

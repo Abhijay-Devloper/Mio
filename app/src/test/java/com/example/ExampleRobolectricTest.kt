@@ -301,4 +301,21 @@ class ExampleRobolectricTest {
     com.example.core.calls.CallSessionHolder.setMinimized(false)
     assertEquals(false, com.example.core.calls.CallSessionHolder.isCallMinimized.value)
   }
+
+  @Test
+  fun `chat message channel sets public lockscreen visibility and push relay safely no-ops without url`() = runBlocking {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val helper = MioNotificationHelper(app)
+    helper.ensureChannel()
+    val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val chatChannel = nm.getNotificationChannel(MioNotificationHelper.CHANNEL_ID)
+      assertEquals(Notification.VISIBILITY_PUBLIC, chatChannel.lockscreenVisibility)
+    }
+
+    val relay = com.example.data.remote.OkHttpPushNotificationRelay(authProvider = { null })
+    relay.notifyNewMessage("chat_1", "msg_1", "user_2", "Elena", "elena")
+    relay.notifyIncomingCall("call_1", "chat_1", "user_2", "Elena", "elena", com.example.data.model.CallType.AUDIO)
+    relay.notifyCallEnded("call_1", "user_2")
+  }
 }

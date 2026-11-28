@@ -1,5 +1,7 @@
 package com.example.core.feedback
 
+import android.content.Context
+import android.os.PowerManager
 import android.util.Log
 import com.example.R
 import com.example.core.calls.CallSessionHolder
@@ -101,31 +103,45 @@ class MioFirebaseMessagingService : FirebaseMessagingService() {
     val senderUsername = data["senderUsername"]?.trim()?.takeIf { it.isNotBlank() }
     val sentAtMs = data["sentAtMs"]?.toLongOrNull() ?: 0L
 
-    runBlocking(Dispatchers.IO) {
-      val settings = runCatching {
-        MioPreferences(applicationContext).settings.first()
-      }.getOrNull()
-      val enabled = settings?.notificationsEnabled ?: true
-      val isMutedNow = (settings?.muteAllUntilMs ?: 0L) > System.currentTimeMillis()
-      if (enabled && !isMutedNow) {
-        MioNotificationHelper(applicationContext).showIncomingChatMessage(
-          chatId = chatId,
-          senderDisplayName = senderDisplay,
-          senderUsername = senderUsername,
-          messageId = messageId,
-          messageTimestampMs = sentAtMs,
-          isFromFcm = true,
-        )
+    val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val wakeLock = runCatching {
+      pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Mio:FcmRelayWakeLock")?.apply {
+        setReferenceCounted(false)
+        acquire(FCM_WAKELOCK_MS)
       }
+    }.getOrNull()
 
-      if (currentUid != null && chatId != null && messageId != null) {
-        withTimeoutOrNull(FCM_PROCESSING_TIMEOUT_MS) {
-          deliverAndDeleteRelayDoc(
-            currentUid = currentUid,
+    try {
+      runBlocking(Dispatchers.IO) {
+        val settings = runCatching {
+          MioPreferences(applicationContext).settings.first()
+        }.getOrNull()
+        val enabled = settings?.notificationsEnabled ?: true
+        val isMutedNow = (settings?.muteAllUntilMs ?: 0L) > System.currentTimeMillis()
+        if (enabled && !isMutedNow) {
+          MioNotificationHelper(applicationContext).showIncomingChatMessage(
             chatId = chatId,
+            senderDisplayName = senderDisplay,
+            senderUsername = senderUsername,
             messageId = messageId,
+            messageTimestampMs = sentAtMs,
+            isFromFcm = true,
           )
         }
+
+        if (currentUid != null && chatId != null && messageId != null) {
+          withTimeoutOrNull(FCM_PROCESSING_TIMEOUT_MS) {
+            deliverAndDeleteRelayDoc(
+              currentUid = currentUid,
+              chatId = chatId,
+              messageId = messageId,
+            )
+          }
+        }
+      }
+    } finally {
+      runCatching {
+        if (wakeLock?.isHeld == true) wakeLock.release()
       }
     }
   }
@@ -312,5 +328,6 @@ class MioFirebaseMessagingService : FirebaseMessagingService() {
   private companion object {
     const val TAG = "MioFCM"
     const val FCM_PROCESSING_TIMEOUT_MS = 8_000L
+    const val FCM_WAKELOCK_MS = 10_000L
   }
 }

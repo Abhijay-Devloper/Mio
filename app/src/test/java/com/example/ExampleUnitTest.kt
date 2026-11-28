@@ -201,11 +201,13 @@ class ExampleUnitTest {
       vm.onComposerTextChanged("hey")
       runCurrent()
       assertEquals(listOf(true), fakePresence.typingWrites)
+      assertEquals(listOf(true), fakeChat.firestoreTypingWrites)
 
       // Idle clear fires after 5 seconds
       advanceTimeBy(MioConstants.TYPING_IDLE_TIMEOUT_MS + 50L)
       advanceUntilIdle()
       assertEquals(listOf(true, false), fakePresence.typingWrites)
+      assertEquals(listOf(true, false), fakeChat.firestoreTypingWrites)
 
       // Double-tap send within debounce window sends only once; blank without mood is ignored
       val thread = sampleAcceptedThread()
@@ -265,9 +267,22 @@ class ExampleUnitTest {
         assertTrue(active.partnerTyping)
         assertEquals(5_000L, active.partnerLastActiveMs)
 
+        // Firestore typing fallback alone keeps partnerTyping true even if RTDB typing is false
+        fakePresence.partnerTyping.value = false
+        threadFlow.value = active.copy(partnerTyping = true)
+        runCurrent()
+        val fsTypingOnly = (vm.chatState.value as UiState.Success).data!!
+        assertTrue(fsTypingOnly.partnerTyping)
+
+        // Stale Firestore typing expires automatically after TYPING_STALE_TIMEOUT_MS
+        advanceTimeBy(MioConstants.TYPING_STALE_TIMEOUT_MS + 100L)
+        runCurrent()
+        val expired = (vm.chatState.value as UiState.Success).data!!
+        assertFalse(expired.partnerTyping)
+
         // Blocking hides partner presence & typing in UI state
         threadFlow.value = active.copy(blockedByMe = true)
-        advanceUntilIdle()
+        runCurrent()
         val blocked = (vm.chatState.value as UiState.Success).data!!
         assertFalse(blocked.partnerOnline)
         assertFalse(blocked.partnerTyping)
@@ -336,6 +351,8 @@ class ExampleUnitTest {
     val sentBodies = mutableListOf<String>()
     val clearedChats = mutableListOf<String>()
     val syncedReceiptStatuses = mutableListOf<MessageStatus?>()
+    val firestoreTypingWrites = mutableListOf<Boolean>()
+    val acknowledgedDeliveries = mutableListOf<String>()
 
     override fun observeChats(myUid: String): Flow<List<ChatThreadPreview>> = flowOf(emptyList())
     override fun observeChat(chatId: String, myUid: String): Flow<ChatThreadPreview?> = chatFlow
@@ -351,6 +368,12 @@ class ExampleUnitTest {
       return Result.success(Unit)
     }
     override suspend fun retryFailedMessage(chat: ChatThreadPreview, myProfile: UserProfile, messageId: String): Result<Unit> = Result.success(Unit)
+    override suspend fun setTyping(chatId: String, myUid: String, typing: Boolean) {
+      firestoreTypingWrites += typing
+    }
+    override suspend fun acknowledgeIncomingDelivery(chatId: String, myUid: String, partnerPublicKey: String) {
+      acknowledgedDeliveries += chatId
+    }
     override suspend fun markChatAsRead(chatId: String, myUid: String, unreadMessageIds: List<String>, updateLastMessagePreviewStatus: Boolean) {}
     override suspend fun syncOutgoingReceiptStatus(chatId: String, myUid: String, lastMessageStatus: MessageStatus?, lastMessageTimeMs: Long) {
       syncedReceiptStatuses += lastMessageStatus

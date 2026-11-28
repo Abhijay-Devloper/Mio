@@ -328,19 +328,33 @@ service cloud.firestore {
                  ) &&
                  isNotBlockedPair(prev.participantUids[0], prev.participantUids[1])
                ) ||
-               // Action 5: Sync own display name / public key without modifying partner's entries
-               (
-                 changed.hasOnly(['participantDisplayNames', 'participantPublicKeys', 'updatedAt']) &&
-                 next.participantDisplayNames[other] == prev.participantDisplayNames[other] &&
-                 next.participantPublicKeys[other] == prev.participantPublicKeys[other] &&
-                 next.participantDisplayNames[uid] is string &&
-                 next.participantDisplayNames[uid].size() >= 1 &&
-                 next.participantDisplayNames[uid].size() <= 40 &&
-                 next.participantPublicKeys[uid] is string &&
-                 next.participantPublicKeys[uid].size() >= 20 &&
-                 next.participantPublicKeys[uid].size() <= 512
-               )
-             );
+                 // Action 5: Sync own display name / public key without modifying partner's entries
+                 (
+                   changed.hasOnly(['participantDisplayNames', 'participantPublicKeys', 'updatedAt']) &&
+                   next.participantDisplayNames[other] == prev.participantDisplayNames[other] &&
+                   next.participantPublicKeys[other] == prev.participantPublicKeys[other] &&
+                   next.participantDisplayNames[uid] is string &&
+                   next.participantDisplayNames[uid].size() >= 1 &&
+                   next.participantDisplayNames[uid].size() <= 40 &&
+                   next.participantPublicKeys[uid] is string &&
+                   next.participantPublicKeys[uid].size() >= 20 &&
+                   next.participantPublicKeys[uid].size() <= 512
+                 ) ||
+                 // Action 6: Per-participant typing indicator (strictly scoped to own UID key)
+                 (
+                   prev.status == 'accepted' &&
+                   prev.blockedBy.size() == 0 &&
+                   changed.hasOnly(['typingBy']) &&
+                   next.typingBy is map &&
+                   next.typingBy.size() <= 2 &&
+                   next.typingBy.keys().hasOnly(prev.participantUids) &&
+                   (!('typingBy' in prev) || !(other in prev.typingBy)
+                     ? !(other in next.typingBy)
+                     : ((other in next.typingBy) && next.typingBy[other] == prev.typingBy[other])) &&
+                   (!(uid in next.typingBy) || next.typingBy[uid] is bool) &&
+                   isNotBlockedPair(prev.participantUids[0], prev.participantUids[1])
+                 )
+               );
     }
 
     // --- 4. 1:1 Chats & MIP Sealed Letter ---

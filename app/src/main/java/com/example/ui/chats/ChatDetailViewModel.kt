@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -114,14 +115,35 @@ class ChatDetailViewModel(
       }
     }
 
+  private val firestoreTypingFlow: Flow<Boolean> = baseChatFlow
+    .map { chat ->
+      chat != null &&
+        chat.status == ChatRequestStatus.ACCEPTED &&
+        !chat.isBlockedAny &&
+        chat.partnerTyping
+    }
+    .distinctUntilChanged()
+    .flatMapLatest { isTyping ->
+      if (!isTyping) {
+        flowOf(false)
+      } else {
+        flow {
+          emit(true)
+          delay(MioConstants.TYPING_STALE_TIMEOUT_MS)
+          emit(false)
+        }
+      }
+    }
+
   val chatState: StateFlow<UiState<ChatThreadPreview?>> = combine(
     baseChatFlow,
     rtdbOverlayFlow,
-  ) { chat, (presence, typing) ->
+    firestoreTypingFlow,
+  ) { chat, (presence, rtdbTyping), fsTyping ->
     val enriched = chat?.let {
       if (it.status == ChatRequestStatus.ACCEPTED && !it.isBlockedAny) {
         it.copy(
-          partnerTyping = typing,
+          partnerTyping = fsTyping || rtdbTyping,
           partnerOnline = presence?.isOnline == true,
           partnerLastActiveMs = presence?.lastActiveMs ?: 0L,
         )
@@ -223,6 +245,7 @@ class ChatDetailViewModel(
     if (isTypingSent) {
       isTypingSent = false
       viewModelScope.launch {
+        chatService.setTyping(chatId, currentUserId, false)
         presenceService.setTyping(chatId, currentUserId, false)
       }
     }
@@ -233,7 +256,10 @@ class ChatDetailViewModel(
     if (text.isBlank()) {
       if (isTypingSent) {
         isTypingSent = false
-        viewModelScope.launch { presenceService.setTyping(chatId, currentUserId, false) }
+        viewModelScope.launch {
+          chatService.setTyping(chatId, currentUserId, false)
+          presenceService.setTyping(chatId, currentUserId, false)
+        }
       }
       return
     }
@@ -241,11 +267,20 @@ class ChatDetailViewModel(
     if (!isTypingSent || (now - lastTypingWriteMs) >= MioConstants.TYPING_THROTTLE_MS) {
       lastTypingWriteMs = now
       isTypingSent = true
-      viewModelScope.launch { presenceService.setTyping(chatId, currentUserId, true) }
+      viewModelScope.launch {
+        val allowed = runCatching { preferences.settings.first().typingIndicatorEnabled }.getOrDefault(true)
+        if (!allowed) {
+          isTypingSent = false
+          return@launch
+        }
+        chatService.setTyping(chatId, currentUserId, true)
+        presenceService.setTyping(chatId, currentUserId, true)
+      }
     }
     typingJob = viewModelScope.launch {
       delay(MioConstants.TYPING_IDLE_TIMEOUT_MS)
       isTypingSent = false
+      chatService.setTyping(chatId, currentUserId, false)
       presenceService.setTyping(chatId, currentUserId, false)
     }
   }
@@ -273,6 +308,7 @@ class ChatDetailViewModel(
 
     viewModelScope.launch {
       if (wasTyping) {
+        chatService.setTyping(chatId, currentUserId, false)
         presenceService.setTyping(chatId, currentUserId, false)
       }
       chatService.sendMessage(chat, myProfile, content, quote)
@@ -445,6 +481,7 @@ class ChatDetailViewModel(
     if (isTypingSent) {
       isTypingSent = false
       CoroutineScope(Dispatchers.IO + NonCancellable).launch {
+        chatService.setTyping(chatId, currentUserId, false)
         presenceService.setTyping(chatId, currentUserId, false)
       }
     }
